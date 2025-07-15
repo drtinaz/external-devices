@@ -60,7 +60,7 @@ def generate_random_serial(length=16):
 
 class DbusMyTestSwitch(VeDbusService):
 
-    def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config):
+    def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload):
         # Use the modern, recommended registration method.
         # Paths are added first, then the service is registered.
         super().__init__(service_name, register=False)
@@ -69,7 +69,12 @@ class DbusMyTestSwitch(VeDbusService):
         self.device_config = device_config
         self.output_configs = output_configs
         self.device_index = device_config.getint('DeviceIndex')
-        
+
+        # --- BEGIN: NEW MQTT PAYLOADS ---
+        self.mqtt_on_payload = mqtt_on_payload
+        self.mqtt_off_payload = mqtt_off_payload
+        # --- END: NEW MQTT PAYLOADS ---
+
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.16')
@@ -188,24 +193,21 @@ class DbusMyTestSwitch(VeDbusService):
     def on_mqtt_message(self, client, userdata, msg):
         """
         MQTT callback for when a message is received on a subscribed topic.
-        Handles both 'on'/'off' and '0'/'1' payloads.
+        Only accepts payloads as defined in the config file.
         """
         try:
             payload = msg.payload.decode().strip().lower()
             topic = msg.topic
             logger.debug(f"Received MQTT message on topic '{topic}': {payload}")
 
-            # Determine the new state based on the payload string
-            if payload == 'on':
+            new_state = None
+            if payload == self.mqtt_on_payload.lower():
                 new_state = 1
-            elif payload == 'off':
+            elif payload == self.mqtt_off_payload.lower():
                 new_state = 0
             else:
-                try:
-                    new_state = int(payload)
-                except ValueError:
-                    logger.warning(f"Invalid MQTT payload received: {payload}. Expected 'on', 'off', '0', or '1'.")
-                    return
+                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{payload}'. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
+                return
             
             # Find the corresponding D-Bus path for this topic
             dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
@@ -306,7 +308,11 @@ class DbusMyTestSwitch(VeDbusService):
 
         try:
             command_topic = self.dbus_path_to_command_topic_map[path]
-            mqtt_payload = 'ON' if value == 1 else 'OFF'
+
+            # --- BEGIN: UPDATED PAYLOAD LOGIC ---
+            mqtt_payload = self.mqtt_on_payload if value == 1 else self.mqtt_off_payload
+            # --- END: UPDATED PAYLOAD LOGIC ---
+
             # Note: Commands are typically not retained
             (rc, mid) = self.mqtt_client.publish(command_topic, mqtt_payload, retain=False)
             
@@ -373,6 +379,11 @@ def run_device_service(device_index):
         
     device_config = config[device_section]
     
+    # --- BEGIN: NEW CONFIG READING ---
+    mqtt_on_payload = device_config.get('MqttOnPayload', 'ON')
+    mqtt_off_payload = device_config.get('MqttOffPayload', 'OFF')
+    # --- END: NEW CONFIG READING ---
+
     # Store the device index in the device config for later use
     device_config['DeviceIndex'] = str(device_index)
     
@@ -427,7 +438,9 @@ def run_device_service(device_index):
     mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
 
     # Pass the MQTT config to the DbusMyTestSwitch class
-    DbusMyTestSwitch(service_name, device_config, output_configs, serial_number, mqtt_config)
+    # --- BEGIN: UPDATED CONSTRUCTOR CALL ---
+    DbusMyTestSwitch(service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload)
+    # --- END: UPDATED CONSTRUCTOR CALL ---
     
     logger.debug('Connected to D-Bus, and switching over to GLib.MainLoop() (= event based)')
     
