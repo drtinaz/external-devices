@@ -6,9 +6,9 @@ setup helper. The simplest method is setup helper.
 *********** MANUAL INSTALLATION *************
 1. Download this package to the /data directory
 2. open a ssh terminal session and navigate to /data/MQTT-switches
-3. Rename config.ini.example to config.ini
-4. Open config.ini using vi or nano and enter the correct details for your configuration.
-5. Save and close config.ini
+3. in the terminal enter the following: cp config.ini.example /data/switches.config.ini
+4. navigate to /data and open switches.config.ini using vi or nano and enter the correct details for your configuration.
+5. Save and close switches.config.ini
 6. Install and start the service mqtt_switches.py
 
 
@@ -23,11 +23,11 @@ setup helper. The simplest method is setup helper.
 8. click proceed
 9. now go to 'active packages' and click on MQTT-switches and download
 10. complete steps 2 thru 5 of the manual installation
-11. you can now re-enable 'auto install' in setup helper menu
+11. you can now re-enable 'auto install' in setup helper menu or click 'install' in the active packages
 
 ************ PACKAGE UPDATES **********************
 If you chose the manual installation method, you will need to manually download and install any future updates.
 If you chose to use setup helper, any future updates will be automatic as long as 'auto install packages' is selected.
-config.ini will survive package updates, this file only needs to be modified at initial install.
+switches.config.ini will survive package updates, this file only needs to be modified at initial install.
 any changes made from the gui (such as switch names, device names or group names) will automatically be saved to the configuration
 file and these changes will survive a reboot or venus os firmware upgrade.
