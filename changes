@@ -2,3 +2,5 @@ v0.1
   first beta
 v0.2
   fix syntax error in config
+v0.3
+  change the location of switches.config.ini to survive package updates
