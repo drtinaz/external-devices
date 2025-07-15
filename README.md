@@ -26,6 +26,7 @@ setup helper. The simplest method is setup helper.
 11. you can now re-enable 'auto install' in setup helper menu or click 'install' in the active packages
 
 ************ PACKAGE UPDATES **********************
+
 If you chose the manual installation method, you will need to manually download and install any future updates.
 If you chose to use setup helper, any future updates will be automatic as long as 'auto install packages' is selected.
 switches.config.ini will survive package updates, this file only needs to be modified at initial install.
