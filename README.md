@@ -1,4 +1,4 @@
-This service adds virtual switches to the gx device GUI v2 switch panel (cerbo and possibly ekrano)
+This service adds virtual switches to the gx device GUI v2 switch panel (this service was tested on a cerbo GX, but quite possibly will work on the ekrano and venus running on rpi as it does not interact with the gpio's. This service creates dbus services which natively interact with venus os)
 that can be used to control external relay modules via mqtt. 
 This can be manually installed as a service, or installed via Kevin Windrems
 setup helper. The simplest method is setup helper. 
