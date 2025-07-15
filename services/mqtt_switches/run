@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting MQTT switches service ***"
+exec 2>&1
+exec /data/MQTT-switches/mqtt_switches.py
