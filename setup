@@ -1,0 +1,11 @@
+#!/bin/bash
+
+packageLogFile="/data/MQTT-switches/log"
+
+# everything done in HelperResources which never returns here !!!
+
+standardPromptAndActions='yes'
+
+#### following line incorporates helper resources into this script
+source "/data/SetupHelper/HelperResources/IncludeHelpers"
+#### end of lines to include helper resources
