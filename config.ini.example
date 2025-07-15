@@ -1,0 +1,78 @@
+[Global]
+loglevel = INFO
+numberofdevices = 3
+
+[Device_1]
+deviceinstance = 100
+customname = Dingtian Module 1
+numberofswitches = 3
+serial = 9754089757783915
+deviceindex = 1
+
+[Output_1_1]
+customname = LP Water Heater
+group = Utilities
+mqttstatetopic = dingtian1/relay14120/out/r1
+mqttcommandtopic = dingtian1/relay14120/in/r1
+
+[Output_1_2]
+customname = Water Pump
+group = Utilities
+mqttstatetopic = dingtian1/relay14120/out/r2
+mqttcommandtopic = dingtian1/relay14120/in/r2
+
+[Output_1_3]
+customname = Inverter Fans
+group = Utilities
+mqttstatetopic = dingtian1/relay14120/out/r3
+mqttcommandtopic = dingtian1/relay14120/in/r3
+
+[Device_2]
+deviceinstance = 101
+customname = Dingtian Module 2
+numberofswitches = 2
+serial = 7517466722546875
+deviceindex = 2
+
+[Output_2_1]
+customname = Porch Lite
+group = Lighting
+mqttstatetopic = dingtian2/relay18065/out/r1
+mqttcommandtopic = dingtian2/relay18065/in/r1
+
+[Output_2_2]
+customname = Living RM Lite
+group = Lighting
+mqttstatetopic = dingtian2/relay18065/out/r2
+mqttcommandtopic = dingtian2/relay18065/in/r2
+
+[Device_3]
+deviceinstance = 102
+customname = Dingtian Module 3
+numberofswitches = 3
+serial = 0340796958070257
+deviceindex = 3
+
+[Output_3_1]
+customname = Off-Door Side Flood
+group = Lighting
+mqttstatetopic = dingtian3/relay18842/out/r1
+mqttcommandtopic = dingtian3/relay18842/in/r1
+
+[Output_3_2]
+customname = Door Side Flood
+group = Lighting
+mqttstatetopic = dingtian3/relay18842/out/r2
+mqttcommandtopic = dingtian3/relay18842/in/r2
+
+[Output_3_3]
+customname = Wall Display
+group = Utilities
+mqttstatetopic = dingtian3/relay18842/out/r3
+mqttcommandtopic = dingtian3/relay18842/in/r3
+
+[MQTT]
+brokeraddress = 192.168.8.135
+port = 1883
+username = derrick
+password = donna41213
