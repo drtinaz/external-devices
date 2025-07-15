@@ -39,6 +39,11 @@ logger.addHandler(file_handler)
 logger.setLevel(logging.DEBUG)
 # --- END: CORRECTED LOGGING SETUP ---
 
+# --- BEGIN: CENTRALIZED CONFIG FILE PATH ---
+# Set the global path for the config file as requested by the user.
+CONFIG_FILE_PATH = '/data/switches.config.ini'
+# --- END: CENTRALIZED CONFIG FILE PATH ---
+
 # A more reliable way to find velib_python
 try:
     sys.path.insert(1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
@@ -268,11 +273,10 @@ class DbusMyTestSwitch(VeDbusService):
         """
         Saves a changed D-Bus setting to the corresponding config file.
         """
-        config_file_path = os.path.join(os.path.dirname(__file__), 'config.ini')
         config = configparser.ConfigParser()
         
         try:
-            config.read(config_file_path)
+            config.read(CONFIG_FILE_PATH)
             
             if not config.has_section(section):
                 logger.warning(f"Creating new section '{section}' in config file.")
@@ -280,7 +284,7 @@ class DbusMyTestSwitch(VeDbusService):
 
             # Update the value and write to file
             config.set(section, key, str(value))
-            with open(config_file_path, 'w') as configfile:
+            with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
                 
             logger.debug(f"Successfully saved setting '{key}' to section '{section}' in config file.")
@@ -332,14 +336,13 @@ def run_device_service(device_index):
     # Log the start of this specific device process
     logger.info(f"Starting D-Bus service process for device {device_index}.")
 
-    config_file_path = os.path.join(os.path.dirname(__file__), 'config.ini')
     config = configparser.ConfigParser()
-    if not os.path.exists(config_file_path):
-        logger.critical(f"Configuration file not found: {config_file_path}")
+    if not os.path.exists(CONFIG_FILE_PATH):
+        logger.critical(f"Configuration file not found: {CONFIG_FILE_PATH}")
         sys.exit(1)
     
     try:
-        config.read(config_file_path)
+        config.read(CONFIG_FILE_PATH)
     except configparser.Error as e:
         logger.critical(f"Error parsing configuration file: {e}")
         sys.exit(1)
@@ -382,7 +385,7 @@ def run_device_service(device_index):
         # Update the in-memory config object and write it back to the file
         config.set(device_section, 'Serial', serial_number)
         try:
-            with open(config_file_path, 'w') as configfile:
+            with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
         except Exception as e:
             logger.error(f"Failed to save serial number to config file: {e}")
@@ -438,14 +441,13 @@ def main():
     # Log the start of the overall launcher script
     logger.info("Starting D-Bus Virtual Switch service launcher.")
 
-    config_file_path = os.path.join(os.path.dirname(__file__), 'config.ini')
     config = configparser.ConfigParser()
-    if not os.path.exists(config_file_path):
-        logger.critical(f"Configuration file not found: {config_file_path}")
+    if not os.path.exists(CONFIG_FILE_PATH):
+        logger.critical(f"Configuration file not found: {CONFIG_FILE_PATH}")
         sys.exit(1)
     
     try:
-        config.read(config_file_path)
+        config.read(CONFIG_FILE_PATH)
     except configparser.Error as e:
         logger.critical(f"Error parsing configuration file: {e}")
         sys.exit(1)
