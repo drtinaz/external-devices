@@ -4,7 +4,7 @@
 # change to DEBUG for troubleshooting
 loglevel = INFO
 # set this to the number of modules you have
-numberofdevices = 3
+numberofdevices = 2
 
 [Device_1]
 # increase this number by 1 for each additional module
@@ -13,76 +13,54 @@ deviceinstance = 100
 customname = Relay Module 1
 # number of switches in this module. add or delete outputs below to match the number of switches for each module
 numberofswitches = 3
-# leave this blank. the service will populate this value
-serial =
+# this sets the mqtt payload values for on and off. set this to what your specific module requires
+MqttOnPayload = ON
+MqttOffPayload = OFF
 
 [Output_1_1]
 # name that will appear in the gui for each switch
-customname = LP Water Heater
+customname = switch name
 # assigns the gui panel this switch will appear under
-group = Utilities
-mqttstatetopic = dingtian1/relay14120/out/r1
-mqttcommandtopic = dingtian1/relay14120/in/r1
+group = panel name
+mqttstatetopic = path/to/topic
+mqttcommandtopic = path/to/topic
 
 [Output_1_2]
-customname = Water Pump
-group = Utilities
-mqttstatetopic = dingtian1/relay14120/out/r2
-mqttcommandtopic = dingtian1/relay14120/in/r2
+customname = switch name
+group = panel name
+mqttstatetopic = path/to/topic
+mqttcommandtopic = path/to/topic
 
 [Output_1_3]
-customname = Inverter Fans
-group = Utilities
-mqttstatetopic = dingtian1/relay14120/out/r3
-mqttcommandtopic = dingtian1/relay14120/in/r3
+customname = switch name
+group = panel name
+mqttstatetopic = path/to/topic
+mqttcommandtopic = path/to/topic
 
 [Device_2]
 deviceinstance = 101
-customname = Dingtian Module 2
+customname = Relay Module 2
 numberofswitches = 2
-serial = 7517466722546875
-deviceindex = 2
+MqttOnPayload = ON
+MqttOffPayload = OFF
 
 [Output_2_1]
-customname = Porch Lite
-group = Lighting
-mqttstatetopic = dingtian2/relay18065/out/r1
-mqttcommandtopic = dingtian2/relay18065/in/r1
+customname = switch name
+group = panel name
+mqttstatetopic = path/to/topic
+mqttcommandtopic = path/to/topic
 
 [Output_2_2]
-customname = Living RM Lite
-group = Lighting
-mqttstatetopic = dingtian2/relay18065/out/r2
-mqttcommandtopic = dingtian2/relay18065/in/r2
+customname = switch name
+group = panel name
+mqttstatetopic = path/to/topic
+mqttcommandtopic = path/to/topic
 
-[Device_3]
-deviceinstance = 102
-customname = Dingtian Module 3
-numberofswitches = 3
-serial = 0340796958070257
-deviceindex = 3
-
-[Output_3_1]
-customname = Off-Door Side Flood
-group = Lighting
-mqttstatetopic = dingtian3/relay18842/out/r1
-mqttcommandtopic = dingtian3/relay18842/in/r1
-
-[Output_3_2]
-customname = Door Side Flood
-group = Lighting
-mqttstatetopic = dingtian3/relay18842/out/r2
-mqttcommandtopic = dingtian3/relay18842/in/r2
-
-[Output_3_3]
-customname = Wall Display
-group = Utilities
-mqttstatetopic = dingtian3/relay18842/out/r3
-mqttcommandtopic = dingtian3/relay18842/in/r3
+# add more devices as needed
 
 [MQTT]
 # address of the broker that the modules are connected to
-brokeraddress = 192.168.8.135
+brokeraddress = 192.168.xxx.xxx
 port = 1883
-username = derrick
-password = donna41213
+username = 
+password = 
