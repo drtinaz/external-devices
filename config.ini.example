@@ -1,18 +1,26 @@
 # add or remove devices and switches to match your needs. see comments below.
 
 [Global]
-loglevel = INFO # change to DEBUG for troubleshooting
-numberofdevices = 3 # set this to the number of modules you have.
+# change to DEBUG for troubleshooting
+loglevel = INFO
+# set this to the number of modules you have
+numberofdevices = 3
 
 [Device_1]
-deviceinstance = 100 # increase this number by 1 for each additional module
-customname = Relay Module 1 # this can be changed to whatever you want to name your modules
-numberofswitches = 3 # number of switches in this module. add or delete outputs below to match the number of switches for each module
-serial = # leave this blank. the service will populate this value
+# increase this number by 1 for each additional module
+deviceinstance = 100
+# this can be changed to whatever you want to name your modules
+customname = Relay Module 1
+# number of switches in this module. add or delete outputs below to match the number of switches for each module
+numberofswitches = 3
+# leave this blank. the service will populate this value
+serial =
 
 [Output_1_1]
-customname = LP Water Heater # name that will appear in the gui for each switch
-group = Utilities # assigns the gui panel this switch will appear under
+# name that will appear in the gui for each switch
+customname = LP Water Heater
+# assigns the gui panel this switch will appear under
+group = Utilities
 mqttstatetopic = dingtian1/relay14120/out/r1
 mqttcommandtopic = dingtian1/relay14120/in/r1
 
@@ -73,7 +81,8 @@ mqttstatetopic = dingtian3/relay18842/out/r3
 mqttcommandtopic = dingtian3/relay18842/in/r3
 
 [MQTT]
-brokeraddress = 192.168.8.135 # address of the broker that the modules are connected to
+# address of the broker that the modules are connected to
+brokeraddress = 192.168.8.135
 port = 1883
 username = derrick
 password = donna41213
