@@ -6,3 +6,5 @@ v0.3
   change the location of switches.config.ini to survive package updates
 v0.4
   add mqtt on and off payload values to config file so that multiple types of devices may be used simultaniously
+v0.5
+  fix file permissions
