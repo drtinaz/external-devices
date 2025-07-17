@@ -8,3 +8,5 @@ v0.4
   add mqtt on and off payload values to config file so that multiple types of devices may be used simultaniously
 v0.5
   fix file permissions
+v0.6
+  add optionsRequired file and add notes to setup
