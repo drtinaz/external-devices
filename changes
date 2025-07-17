@@ -12,3 +12,5 @@ v0.6
   add optionsRequired file and add notes to setup
 v0.7
   add missing step in instructions
+v0.8
+  redirected logging to var/log/mqtt_switches
