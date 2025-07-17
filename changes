@@ -10,3 +10,5 @@ v0.5
   fix file permissions
 v0.6
   add optionsRequired file and add notes to setup
+v0.7
+  add missing step in instructions
