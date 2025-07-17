@@ -1,5 +1,25 @@
 #!/bin/bash
 
+### display innitial message
+
+echo
+echo
+echo "***********************************************************"
+echo "***********             WARNING                ************"
+echo "***********           PLEASE READ              ************"
+echo "***********************************************************"
+echo
+echo "This package installs virtual switches visible in gui v2"
+echo "that are used to control external modules via MQTT."
+echo "Initial installation requires that configuration be completed"
+echo "before this service is installed. Please refer to the github"
+echo "instructions for initial configuration. Subsequent updates to"
+echo "this package, or venus firmware updates, do not require configuration."
+echo "If this is the initial install, exit this setup and complete the"
+echo "configuration, then return here and finish the install."
+echo
+echo
+
 packageLogFile="/data/MQTT-switches/log"
 
 # everything done in HelperResources which never returns here !!!
