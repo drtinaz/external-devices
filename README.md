@@ -40,6 +40,7 @@ nano /data/switches.config.ini
 ```
 9. Finish installing the service by entering the following:
 ```
+touch /data/setupOptions/MQTT-switches/optionsSet
 /data/MQTT-switches/setup install
 ```
 
