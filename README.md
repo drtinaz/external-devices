@@ -17,6 +17,7 @@ cp /data/MQTT-switches/config.ini.example /data/switches.config.ini
 nano /data/switches.config.ini
 ```
 6. Install and start the service mqtt_switches.py
+7. reboot the gx device
 
 UPDATES: Package updates and venus os firmware updates will require you to repeat the install process, less the configuration.
 
@@ -43,6 +44,7 @@ nano /data/switches.config.ini
 touch /data/setupOptions/MQTT-switches/optionsSet
 /data/MQTT-switches/setup install
 ```
+10. Reboot the gx device.
 
 UPDATES: Installing this package via setup helper ensures that package updates will be automatic,
 and venus os firmware updates will result in automatic re-installation of the package.
