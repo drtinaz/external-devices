@@ -11,7 +11,7 @@ import time
 import paho.mqtt.client as mqtt
 import threading
 
-# --- BEGIN: CORRECTED LOGGING SETUP ---
+# --- BEGIN: MODIFIED LOGGING SETUP ---
 # Get the root logger instance
 logger = logging.getLogger()
 
@@ -23,21 +23,17 @@ for handler in logger.handlers[:]:
 # Now configure the logging for the script
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Get the directory of the currently running script
-script_dir = os.path.dirname(os.path.abspath(__file__))
-log_file_path = os.path.join(script_dir, 'log')
+# Create a StreamHandler to write logs to the console (stderr by default)
+console_handler = logging.StreamHandler(sys.stdout) # You can use sys.stderr as well
+console_handler.setFormatter(formatter)
 
-# Create a FileHandler to write logs to the 'log' file
-file_handler = logging.FileHandler(log_file_path)
-file_handler.setFormatter(formatter)
-
-# Add the FileHandler to the root logger
-logger.addHandler(file_handler)
+# Add the StreamHandler to the root logger
+logger.addHandler(console_handler)
 
 # Set the root logger's level low enough to catch everything
 # The log level from the config file will filter what is actually written
 logger.setLevel(logging.DEBUG)
-# --- END: CORRECTED LOGGING SETUP ---
+# --- END: MODIFIED LOGGING SETUP ---
 
 # --- BEGIN: CENTRALIZED CONFIG FILE PATH ---
 # Set the global path for the config file as requested by the user.
