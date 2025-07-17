@@ -5,10 +5,13 @@ setup helper. The simplest method is setup helper.
 
 *********** MANUAL INSTALLATION *************
 1. Download this package to the /data directory
-3. in SSH terminal enter the following: '''cp /data/MQTT-switches/config.ini.example /data/switches.config.ini'''
-4. navigate to /data and open switches.config.ini using vi or nano and enter the correct details for your configuration.
-5. Save and close switches.config.ini
-6. Install and start the service mqtt_switches.py
+3. in SSH terminal enter the following:
+'''
+cp /data/MQTT-switches/config.ini.example /data/switches.config.ini
+'''
+5. navigate to /data and open switches.config.ini using vi or nano and enter the correct details for your configuration.
+6. Save and close switches.config.ini
+7. Install and start the service mqtt_switches.py
 
 
 ************ INSTALL USING KEVINS SETUP HELPER **************
