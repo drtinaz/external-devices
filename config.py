@@ -189,21 +189,21 @@ def create_or_edit_config():
         if choice == '1':
             print("Running: /data/MQTT-switches/setup install")
             try:
-                subprocess.run(['/data/MQTT-switches/setup install'], check=True)
+                subprocess.run(['/data/MQTT-switches/setup', 'install'], check=True)
                 print("Service installed and activated successfully.")
             except subprocess.CalledProcessError as e:
                 print(f"Error installing service: {e}")
             except FileNotFoundError:
                 print("Error: '/data/MQTT-switches/setup' not found. Please ensure the setup script exists.")
         elif choice == '2':
-            print("Running: svs -t /service/mqtt_switches")
+            print("Running: svc -t /service/mqtt_switches")
             try:
-                subprocess.run(['svs -t /service/mqtt_switches'], check=True)
+                subprocess.run(['svc', '-t', '/service/mqtt_switches'], check=True)
                 print("Service restarted successfully.")
             except subprocess.CalledProcessError as e:
                 print(f"Error restarting service: {e}")
             except FileNotFoundError:
-                print("Error: 'svs' command not found. Please ensure 'svs' is in your PATH.")
+                print("Error: 'svc' command not found. Please ensure 'svc' is in your PATH.")
         elif choice == '3':
             print("Exiting script.")
             break
