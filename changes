@@ -14,3 +14,5 @@ v0.7
   add missing step in instructions
 v0.8
   redirected logging to var/log/mqtt_switches
+v0.8.1
+  move config file location and create a configuration script
