@@ -1,27 +1,3 @@
-This service adds virtual switches to the gx device GUI v2 switch panel (this service was tested on a cerbo GX, but quite possibly will work on the ekrano and venus running on rpi as it does not interact with the gpio's. This service creates dbus services which natively interact with venus os)
-that can be used to control external relay modules via mqtt. 
-This can be manually installed as a service, or installed via Kevin Windrems
-setup helper. The simplest method is setup helper. 
-
-*************************************************
-*********** MANUAL INSTALLATION *************
-1. Download this package to the /data directory
-3. in SSH terminal enter the following:
-
-```
-cp /data/MQTT-switches/config.ini.example /data/switches.config.ini
-```
-
-5. Complete initial configuration by editing the config file:
-```
-nano /data/switches.config.ini
-```
-6. Install and start the service mqtt_switches.py
-7. reboot the gx device
-
-UPDATES: Package updates and venus os firmware updates will require you to repeat the install process, less the configuration.
-
-*******************************************************************
 ************ INSTALL USING KEVINS SETUP HELPER **************
 1. Install Kevins setup helper ( https://github.com/kwindrem/SetupHelper )
 3. From the package manager menu click on inactive packages and click 'new' at the top
@@ -31,28 +7,30 @@ UPDATES: Package updates and venus os firmware updates will require you to repea
    github branch or tag : main
 5. click proceed
 6. now go to 'active packages' and click on MQTT-switches and download
-7. open a SSH terminal and enter the following:
+7. open a SSH terminal and run the configuration script:
 ```
-cp /data/MQTT-switches/config.ini.example /data/switches.config.ini
+/data/MQTT-switches/config.py
 ```
-8. Complete initial configuration by editing the config file:
-```
-nano /data/switches.config.ini
-```
-9. Finish installing the service by entering the following:
-```
-touch /data/setupOptions/MQTT-switches/optionsSet
-/data/MQTT-switches/setup install
-```
-10. Reboot the gx device.
+8. When the configuration is complete, select option 1 to install and activate the service.
 
-UPDATES: Installing this package via setup helper ensures that package updates will be automatic,
-and venus os firmware updates will result in automatic re-installation of the package.
+Device custom names, switch custom names, and group assignments can all be changed from the
+gui and will populate to the config file to persist reboots and system upgrades. If you need to
+make other changes such as number of devices or device specific settings, re-run the config script
+in terminal and select option 2 from the menu.
 
-*********************************************************************************************************
-******** ABOUT THE CONFIG FILE 
 
-switches.config.ini will survive package updates, this file only needs to be modified at initial install, or if you
-need to change the device configuration.
-Any changes made from the gui (such as switch names, device names or group names) will automatically be saved to the configuration
-file and these changes will survive a reboot or venus os firmware upgrade.
+********************************************************************************************
+*************                     BREAKING CHANGES                       *******************
+
+UPDATING TO V1.0 FROM PREVIOUS VERSIONS WILL BREAK THE SERVICE. THE CONFIG FILE LOCATION HAS
+BEEN MOVED. YOU CAN COPY THE CONTENTS OF THE CONFIG TO THE NEW LOCATION BY DOING THE FOLLOWING:
+
+1. open SSH terminal and enter the following:
+```
+cp /data/switches.config.ini /data/setupOptions/MQTT-switches/optionsSet
+```
+2. reboot for the changes to take effect:
+```
+reboot
+```
+
