@@ -37,7 +37,8 @@ logger.setLevel(logging.DEBUG)
 
 # --- BEGIN: CENTRALIZED CONFIG FILE PATH ---
 # Set the global path for the config file as requested by the user.
-CONFIG_FILE_PATH = '/data/switches.config.ini'
+# Changed from '/data/switches.config.ini' to the new path
+CONFIG_FILE_PATH = '/data/setupOptions/MQTT-switches/optionsSet'
 # --- END: CENTRALIZED CONFIG FILE PATH ---
 
 # A more reliable way to find velib_python
@@ -48,11 +49,7 @@ except ImportError:
     logger.critical("Cannot find vedbus library. Please ensure it's in the correct path.")
     sys.exit(1)
 
-def generate_random_serial(length=16):
-    """
-    Generates a random serial number of a given length.
-    """
-    return ''.join([str(random.randint(0, 9)) for _ in range(length)])
+# Removed generate_random_serial function as it will no longer be used.
 
 class DbusMyTestSwitch(VeDbusService):
 
@@ -139,9 +136,9 @@ class DbusMyTestSwitch(VeDbusService):
         self.add_path(f'{settings_prefix}/Type', 1, writeable=True)
         self.add_path(f'{settings_prefix}/ValidTypes', 7)
 
-    def setup_mqtt_client(self):
+    def setup_mqtt_client(self, retry_interval=5, max_retries=12):
         """
-        Initializes and starts the MQTT client.
+        Initializes and starts the MQTT client with retry logic.
         """
         # FIX: Change to use the new Callback API version 2
         self.mqtt_client = mqtt.Client(
@@ -159,17 +156,27 @@ class DbusMyTestSwitch(VeDbusService):
         self.mqtt_client.on_message = self.on_mqtt_message
         self.mqtt_client.on_publish = self.on_mqtt_publish
         
-        try:
-            self.mqtt_client.connect(
-                self.mqtt_config.get('BrokerAddress'),
-                self.mqtt_config.getint('Port', 1883),
-                60
-            )
-            # Start the MQTT network loop in a separate thread
-            self.mqtt_client.loop_start()
-            logger.debug("MQTT client started.")
-        except Exception as e:
-            logger.error(f"Failed to connect to MQTT broker: {e}")
+        retries = 0
+        while retries < max_retries:
+            try:
+                logger.debug(f"Attempting to connect to MQTT broker ({retries + 1}/{max_retries})...")
+                self.mqtt_client.connect(
+                    self.mqtt_config.get('BrokerAddress'),
+                    self.mqtt_config.getint('Port', 1883),
+                    60
+                )
+                # Start the MQTT network loop in a separate thread
+                self.mqtt_client.loop_start()
+                logger.debug("MQTT client started.")
+                return # Exit on successful connection
+            except Exception as e:
+                logger.error(f"Failed to connect to MQTT broker: {e}. Retrying in {retry_interval} seconds...")
+                time.sleep(retry_interval)
+                retries += 1
+        
+        logger.critical(f"Failed to connect to MQTT broker after {max_retries} attempts. Exiting.")
+        sys.exit(1)
+
 
     def on_mqtt_connect(self, client, userdata, flags, rc, properties):
         """
@@ -185,6 +192,10 @@ class DbusMyTestSwitch(VeDbusService):
                 logger.debug(f"Subscribed to MQTT state topic: {topic}")
         else:
             logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+            # If connection fails, attempt to reconnect or exit
+            # For now, just log, loop_start will handle automatic reconnection if possible
+            # based on mosquitto's internal retry mechanism, but we added a more robust retry
+            # at initial connection in setup_mqtt_client.
 
     def on_mqtt_message(self, client, userdata, msg):
         """
@@ -383,22 +394,16 @@ def run_device_service(device_index):
     # Store the device index in the device config for later use
     device_config['DeviceIndex'] = str(device_index)
     
-    # Check for an existing serial number, or generate a new one
+    # --- BEGIN: MODIFIED SERIAL NUMBER HANDLING ---
+    # Now, the serial number MUST be present in the config file.
+    # If not found or empty, log a critical error and exit.
     serial_number = device_config.get('Serial')
     if not serial_number or serial_number.strip() == '':
-        serial_number = generate_random_serial()
-        logger.debug(f"Generated new serial number '{serial_number}' for device {device_index}. Saving to config file.")
-        
-        # Update the in-memory config object and write it back to the file
-        config.set(device_section, 'Serial', serial_number)
-        try:
-            with open(CONFIG_FILE_PATH, 'w') as configfile:
-                config.write(configfile)
-        except Exception as e:
-            logger.error(f"Failed to save serial number to config file: {e}")
-            
+        logger.critical(f"Serial number not found or is empty for device {device_index} in config. Exiting. Please run the setup script to generate a serial.")
+        sys.exit(1)
     else:
         logger.debug(f"Using existing serial number '{serial_number}' for device {device_index}.")
+    # --- END: MODIFIED SERIAL NUMBER HANDLING ---
 
     try:
         num_switches = device_config.getint('NumberOfSwitches')
