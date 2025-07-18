@@ -2,6 +2,7 @@
 import configparser
 import os
 import random
+import subprocess # Import the subprocess module
 
 def generate_serial():
     """Generates a random 16-digit serial number."""
@@ -33,7 +34,7 @@ def create_or_edit_config():
     
     # Prompt for loglevel, default to INFO if not present or empty
     current_loglevel = config.get('Global', 'loglevel', fallback='INFO')
-    loglevel = input(f"Enter log level (default: {current_loglevel}): ") or current_loglevel
+    loglevel = input(f"Enter log level (options: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: {current_loglevel}): ") or current_loglevel
     config.set('Global', 'loglevel', loglevel)
 
     # Prompt for number of devices
@@ -175,6 +176,39 @@ def create_or_edit_config():
     with open(config_path, 'w') as configfile:
         config.write(configfile)
     print(f"\nconfig.ini successfully created/updated at {config_path}")
+
+    # Post-configuration menu
+    while True:
+        print("\n--- Service Options ---")
+        print("1) Install and activate service")
+        print("2) Restart service")
+        print("3) Quit and exit")
+        
+        choice = input("Enter your choice (1, 2, or 3): ")
+
+        if choice == '1':
+            print("Running: /data/MQTT-switches/setup install")
+            try:
+                subprocess.run(['/data/MQTT-switches/setup', 'install'], check=True)
+                print("Service installed and activated successfully.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error installing service: {e}")
+            except FileNotFoundError:
+                print("Error: '/data/MQTT-switches/setup' not found. Please ensure the setup script exists.")
+        elif choice == '2':
+            print("Running: svs -t /service/mqtt_switches")
+            try:
+                subprocess.run(['svs', '-t', '/service/mqtt_switches'], check=True)
+                print("Service restarted successfully.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error restarting service: {e}")
+            except FileNotFoundError:
+                print("Error: 'svs' command not found. Please ensure 'svs' is in your PATH.")
+        elif choice == '3':
+            print("Exiting script.")
+            break
+        else:
+            print("Invalid choice. Please enter 1, 2, or 3.")
 
 if __name__ == "__main__":
     create_or_edit_config()
