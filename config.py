@@ -10,11 +10,11 @@ def generate_serial():
 
 def create_or_edit_config():
     """
-    Creates or edits a config.ini file based on user input.
-    The file will be located in /data/setupOptions/MQTT-switches/optionsSet.
+    Creates or edits a config file based on user input.
+    The file will be located in /data/setupOptions/MQTT-switches and named optionsSet.
     """
-    config_dir = '/data/setupOptions/MQTT-switches/optionsSet'
-    config_path = os.path.join(config_dir, 'config.ini')
+    config_dir = '/data/setupOptions/MQTT-switches'
+    config_path = os.path.join(config_dir, 'optionsSet') # Updated config file name
 
     # Ensure the directory exists
     os.makedirs(config_dir, exist_ok=True)
@@ -24,9 +24,9 @@ def create_or_edit_config():
 
     if file_exists:
         config.read(config_path)
-        print(f"Existing config.ini found at {config_path}. It will be updated.")
+        print(f"Existing config file found at {config_path}. It will be updated.")
     else:
-        print(f"No existing config.ini found. A new one will be created at {config_path}.")
+        print(f"No existing config file found. A new one will be created at {config_path}.")
 
     # Global settings
     if not config.has_section('Global'):
@@ -175,7 +175,7 @@ def create_or_edit_config():
     # Write the configuration to the file
     with open(config_path, 'w') as configfile:
         config.write(configfile)
-    print(f"\nconfig.ini successfully created/updated at {config_path}")
+    print(f"\nconfig successfully created/updated at {config_path}")
 
     # Post-configuration menu
     while True:
@@ -189,7 +189,7 @@ def create_or_edit_config():
         if choice == '1':
             print("Running: /data/MQTT-switches/setup install")
             try:
-                subprocess.run(['/data/MQTT-switches/setup', 'install'], check=True)
+                subprocess.run(['/data/MQTT-switches/setup install'], check=True)
                 print("Service installed and activated successfully.")
             except subprocess.CalledProcessError as e:
                 print(f"Error installing service: {e}")
@@ -198,7 +198,7 @@ def create_or_edit_config():
         elif choice == '2':
             print("Running: svs -t /service/mqtt_switches")
             try:
-                subprocess.run(['svs', '-t', '/service/mqtt_switches'], check=True)
+                subprocess.run(['svs -t /service/mqtt_switches'], check=True)
                 print("Service restarted successfully.")
             except subprocess.CalledProcessError as e:
                 print(f"Error restarting service: {e}")
