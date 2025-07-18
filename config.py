@@ -180,8 +180,8 @@ def create_or_edit_config():
     # Post-configuration menu
     while True:
         print("\n--- Service Options ---")
-        print("1) Install and activate service")
-        print("2) Restart service")
+        print("1) Install and activate service (system will reboot)")
+        print("2) Restart service (system will reboot)")
         print("3) Quit and exit")
         
         choice = input("Enter your choice (1, 2, or 3): ")
@@ -190,20 +190,20 @@ def create_or_edit_config():
             print("Running: /data/MQTT-switches/setup install")
             try:
                 subprocess.run(['/data/MQTT-switches/setup', 'install'], check=True)
-                print("Service installed and activated successfully.")
+                print("Service installed and activated successfully. Rebooting system...")
+                subprocess.run(['sudo', 'reboot'], check=True) # Added reboot
             except subprocess.CalledProcessError as e:
-                print(f"Error installing service: {e}")
+                print(f"Error installing service or rebooting: {e}")
             except FileNotFoundError:
-                print("Error: '/data/MQTT-switches/setup' not found. Please ensure the setup script exists.")
+                print("Error: '/data/MQTT-switches/setup' or 'sudo' command not found. Please ensure the setup script exists and sudo is in your PATH.")
         elif choice == '2':
-            print("Running: svc -t /service/mqtt_switches")
+            print("Rebooting system...")
             try:
-                subprocess.run(['svc', '-t', '/service/mqtt_switches'], check=True)
-                print("Service restarted successfully.")
+                subprocess.run(['sudo', 'reboot'], check=True) # Changed to direct reboot
             except subprocess.CalledProcessError as e:
-                print(f"Error restarting service: {e}")
+                print(f"Error rebooting system: {e}")
             except FileNotFoundError:
-                print("Error: 'svc' command not found. Please ensure 'svc' is in your PATH.")
+                print("Error: 'sudo' command not found. Please ensure sudo is in your PATH.")
         elif choice == '3':
             print("Exiting script.")
             break
