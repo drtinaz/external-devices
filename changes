@@ -14,9 +14,7 @@ v0.7
   add missing step in instructions
 v0.8
   redirected logging to var/log/mqtt_switches
-v0.8.1
+v1.0
   move config file location and create a configuration script
-v0.8.2
   add exit options to config.py
-v0.8.3
   fix file permission issues
