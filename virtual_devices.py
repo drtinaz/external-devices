@@ -404,7 +404,7 @@ def run_device_service(device_index):
         num_switches = 1
 
     output_configs = []
-    for j in range(1, num_swches + 1):
+    for j in range(1, num_switches + 1):
         # Updated output section name
         output_section = f'switch_{device_index}_{j}'
         
