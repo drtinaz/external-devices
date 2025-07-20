@@ -107,6 +107,33 @@ def create_or_edit_config():
             print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
     config.set('Global', 'numberoftanksensors', str(num_tank_sensors))
 
+    # Prompt for number of virtual batteries (NEW)
+    default_num_virtual_batteries_initial = 0 if not file_exists else 0
+    current_num_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=default_num_virtual_batteries_initial)
+    while True:
+        try:
+            num_virtual_batteries_input = input(f"Enter the number of virtual batteries (current: {current_num_virtual_batteries if current_num_virtual_batteries >= 0 else 'not set'}): ")
+            if num_virtual_batteries_input:
+                num_virtual_batteries = int(num_virtual_batteries_input)
+                if num_virtual_batteries < 0:
+                    raise ValueError
+                break
+            elif current_num_virtual_batteries >= 0:
+                num_virtual_batteries = current_num_virtual_batteries
+                break
+            elif not file_exists:
+                num_virtual_batteries = default_num_virtual_batteries_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+    config.set('Global', 'numberofvirtualbatteries', str(num_virtual_batteries))
+
+
+    # Device instance counter to ensure they start at 100 and increment
+    device_instance_counter = 100
+
     # Relay module settings
     for i in range(1, num_relay_modules + 1):
         relay_module_section = f'Relay_Module_{i}'
@@ -116,9 +143,11 @@ def create_or_edit_config():
             config.add_section(relay_module_section)
 
         # Device instance
-        current_device_instance = config.getint(relay_module_section, 'deviceinstance', fallback=100 + (i - 1))
+        current_device_instance = config.getint(relay_module_section, 'deviceinstance', fallback=device_instance_counter)
         device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
         config.set(relay_module_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+        device_instance_counter = int(config.get(relay_module_section, 'deviceinstance')) + 1
+
 
         # Custom name
         current_custom_name = config.get(relay_module_section, 'customname', fallback=f'Relay Module {i}')
@@ -205,9 +234,10 @@ def create_or_edit_config():
             config.add_section(temp_sensor_section)
 
         # Device instance
-        current_device_instance = config.getint(temp_sensor_section, 'deviceinstance', fallback=200 + (i - 1))
+        current_device_instance = config.getint(temp_sensor_section, 'deviceinstance', fallback=device_instance_counter)
         device_instance_input = input(f"Enter device instance for Temperature Sensor {i} (current: {current_device_instance}): ")
         config.set(temp_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+        device_instance_counter = int(config.get(temp_sensor_section, 'deviceinstance')) + 1
 
         # Custom name
         current_custom_name = config.get(temp_sensor_section, 'customname', fallback=f'Temperature Sensor {i}')
@@ -223,6 +253,21 @@ def create_or_edit_config():
         else:
             print(f"Using existing serial for Temperature Sensor {i}: {current_serial}")
             config.set(temp_sensor_section, 'serial', current_serial)
+
+        # Type of temperature sensor
+        temp_sensor_types = ['battery', 'fridge', 'generic', 'room', 'outdoor', 'water heater', 'freezer']
+        current_temp_sensor_type = config.get(temp_sensor_section, 'type', fallback='generic')
+        while True:
+            temp_type_input = input(f"Enter type for Temperature Sensor {i} (options: {', '.join(temp_sensor_types)}; current: {current_temp_sensor_type}): ")
+            if temp_type_input:
+                if temp_type_input.lower() in temp_sensor_types:
+                    config.set(temp_sensor_section, 'type', temp_type_input.lower())
+                    break
+                else:
+                    print(f"Invalid type. Please choose from: {', '.join(temp_sensor_types)}")
+            else:
+                config.set(temp_sensor_section, 'type', current_temp_sensor_type)
+                break
 
         # Temperature state topic
         current_temp_state_topic = config.get(temp_sensor_section, 'temperaturestatetopic', fallback='path/to/mqtt/temperature')
@@ -246,9 +291,10 @@ def create_or_edit_config():
             config.add_section(tank_sensor_section)
 
         # Device instance
-        current_device_instance = config.getint(tank_sensor_section, 'deviceinstance', fallback=300 + (i - 1))
+        current_device_instance = config.getint(tank_sensor_section, 'deviceinstance', fallback=device_instance_counter)
         device_instance_input = input(f"Enter device instance for Tank Sensor {i} (current: {current_device_instance}): ")
         config.set(tank_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+        device_instance_counter = int(config.get(tank_sensor_section, 'deviceinstance')) + 1
 
         # Custom name
         current_custom_name = config.get(tank_sensor_section, 'customname', fallback=f'Tank Sensor {i}')
@@ -279,6 +325,76 @@ def create_or_edit_config():
         current_temp_state_topic = config.get(tank_sensor_section, 'temperaturestatetopic', fallback='path/to/mqtt/temperature')
         temp_state_topic = input(f"Enter MQTT temperature state topic for Tank Sensor {i} (current: {current_temp_state_topic}): ")
         config.set(tank_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
+
+    # Virtual Battery settings (NEW SECTION)
+    for i in range(1, num_virtual_batteries + 1):
+        virtual_battery_section = f'Virtual_Battery_{i}'
+        if not config.has_section(virtual_battery_section):
+            config.add_section(virtual_battery_section)
+
+        # Device instance
+        current_device_instance = config.getint(virtual_battery_section, 'deviceinstance', fallback=device_instance_counter)
+        device_instance_input = input(f"Enter device instance for Virtual Battery {i} (current: {current_device_instance}): ")
+        config.set(virtual_battery_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+        device_instance_counter = int(config.get(virtual_battery_section, 'deviceinstance')) + 1
+
+        # Custom name
+        current_custom_name = config.get(virtual_battery_section, 'customname', fallback=f'Virtual Battery {i}')
+        custom_name = input(f"Enter custom name for Virtual Battery {i} (current: {current_custom_name}): ")
+        config.set(virtual_battery_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        # Serial number - generate if not present
+        current_serial = config.get(virtual_battery_section, 'serial', fallback='')
+        if not current_serial:
+            new_serial = generate_serial()
+            print(f"No existing serial for Virtual Battery {i}. Generating new serial: {new_serial}")
+            config.set(virtual_battery_section, 'serial', new_serial)
+        else:
+            print(f"Using existing serial for Virtual Battery {i}: {current_serial}")
+            config.set(virtual_battery_section, 'serial', current_serial)
+
+        # Battery capacity in Ah
+        current_capacity = config.get(virtual_battery_section, 'capacityah', fallback='100')
+        capacity = input(f"Enter capacity for Virtual Battery {i} in Ah (current: {current_capacity}): ")
+        config.set(virtual_battery_section, 'capacityah', capacity if capacity else current_capacity)
+
+        # State Topic Paths
+        current_current_state_topic = config.get(virtual_battery_section, 'currentstatetopic', fallback='path/to/mqtt/battery/current')
+        current_state_topic = input(f"Enter MQTT current state topic for Virtual Battery {i} (current: {current_current_state_topic}): ")
+        config.set(virtual_battery_section, 'currentstatetopic', current_state_topic if current_state_topic else current_current_state_topic)
+
+        current_power_state_topic = config.get(virtual_battery_section, 'powerstatetopic', fallback='path/to/mqtt/battery/power')
+        power_state_topic = input(f"Enter MQTT power state topic for Virtual Battery {i} (current: {current_power_state_topic}): ")
+        config.set(virtual_battery_section, 'powerstatetopic', power_state_topic if power_state_topic else current_power_state_topic)
+
+        current_temperature_state_topic = config.get(virtual_battery_section, 'temperaturestatetopic', fallback='path/to/mqtt/battery/temperature')
+        temperature_state_topic = input(f"Enter MQTT temperature state topic for Virtual Battery {i} (current: {current_temperature_state_topic}): ")
+        config.set(virtual_battery_section, 'temperaturestatetopic', temperature_state_topic if temperature_state_topic else current_temperature_state_topic)
+
+        current_voltage_state_topic = config.get(virtual_battery_section, 'voltagestatetopic', fallback='path/to/mqtt/battery/voltage')
+        voltage_state_topic = input(f"Enter MQTT voltage state topic for Virtual Battery {i} (current: {current_voltage_state_topic}): ")
+        config.set(virtual_battery_section, 'voltagestatetopic', voltage_state_topic if voltage_state_topic else current_voltage_state_topic)
+
+        current_max_charge_current_state_topic = config.get(virtual_battery_section, 'maxchargecurrentstatetopic', fallback='path/to/mqtt/battery/maxchargecurrent')
+        max_charge_current_state_topic = input(f"Enter MQTT max charge current state topic for Virtual Battery {i} (current: {current_max_charge_current_state_topic}): ")
+        config.set(virtual_battery_section, 'maxchargecurrentstatetopic', max_charge_current_state_topic if max_charge_current_state_topic else current_max_charge_current_state_topic)
+
+        current_max_charge_voltage_state_topic = config.get(virtual_battery_section, 'maxchargevoltagestatetopic', fallback='path/to/mqtt/battery/maxchargevoltage')
+        max_charge_voltage_state_topic = input(f"Enter MQTT max charge voltage state topic for Virtual Battery {i} (current: {current_max_charge_voltage_state_topic}): ")
+        config.set(virtual_battery_section, 'maxchargevoltagestatetopic', max_charge_voltage_state_topic if max_charge_voltage_state_topic else current_max_charge_voltage_state_topic)
+
+        current_max_discharge_current_state_topic = config.get(virtual_battery_section, 'maxdischargecurrentstatetopic', fallback='path/to/mqtt/battery/maxdischargecurrent')
+        max_discharge_current_state_topic = input(f"Enter MQTT max discharge current state topic for Virtual Battery {i} (current: {current_max_discharge_current_state_topic}): ")
+        config.set(virtual_battery_section, 'maxdischargecurrentstatetopic', max_discharge_current_state_topic if max_discharge_current_state_topic else current_max_discharge_current_state_topic)
+
+        current_soc_state_topic = config.get(virtual_battery_section, 'socstatetopic', fallback='path/to/mqtt/battery/soc')
+        soc_state_topic = input(f"Enter MQTT SOC state topic for Virtual Battery {i} (current: {current_soc_state_topic}): ")
+        config.set(virtual_battery_section, 'socstatetopic', soc_state_topic if soc_state_topic else current_soc_state_topic)
+
+        current_soh_state_topic = config.get(virtual_battery_section, 'sohstatetopic', fallback='path/to/mqtt/battery/soh')
+        soh_state_topic = input(f"Enter MQTT SOH state topic for Virtual Battery {i} (current: {current_soh_state_topic}): ")
+        config.set(virtual_battery_section, 'sohstatetopic', soh_state_topic if soh_state_topic else current_soh_state_topic)
+
 
     # MQTT broker settings
     if not config.has_section('MQTT'):
