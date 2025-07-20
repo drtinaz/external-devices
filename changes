@@ -1,22 +1,2 @@
 v0.1
   first beta
-v0.2
-  fix syntax error in config
-v0.3
-  change the location of switches.config.ini to survive package updates
-v0.4
-  add mqtt on and off payload values to config file so that multiple types of devices may be used simultaniously
-v0.5
-  fix file permissions
-v0.6
-  add optionsRequired file and add notes to setup
-v0.7
-  add missing step in instructions
-v0.8
-  redirected logging to var/log/mqtt_switches
-v1.0
-  move config file location and create a   configuration script
-  add exit options to config.py
-  fix file permission issues
-v1.1
-  update setup script

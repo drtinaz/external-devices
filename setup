@@ -1,6 +1,6 @@
 #!/bin/bash
 
-packageLogFile="/data/MQTT-switches/log"
+packageLogFile="/data/venus-os_virtual-devices/log"
 
 # everything done in HelperResources which never returns here !!!
 
