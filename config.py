@@ -37,7 +37,7 @@ def create_or_edit_config():
     loglevel = input(f"Enter log level (options: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: {current_loglevel}): ") or current_loglevel
     config.set('Global', 'loglevel', loglevel)
 
-    # Prompt for number of devices
+    # Prompt for number of relay modules
     # Default to 1 if file doesn't exist, otherwise use existing or 0
     default_num_devices_initial = 1 if not file_exists else 0
     current_num_devices = config.getint('Global', 'numberofdevices', fallback=default_num_devices_initial)
