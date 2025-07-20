@@ -244,7 +244,8 @@ class DbusMyTestSwitch(VeDbusService):
         # If the change is to the top-level device's CustomName, save it to the config file
         elif path == '/CustomName':
             key_name = 'CustomName'
-            section_name = f'Device_{self.device_index}'
+            # Updated section name for device configuration
+            section_name = f'Relay_Module_{self.device_index}' 
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             self.save_config_change(section_name, key_name, value)
             return True
@@ -256,7 +257,8 @@ class DbusMyTestSwitch(VeDbusService):
                 # Corrected indices below
                 output_index = parts[2].replace('output_', '')
                 setting_key = parts[4]
-                section_name = f'Output_{self.device_index}_{output_index}'
+                # Updated section name for output configuration
+                section_name = f'switch_{self.device_index}_{output_index}'
                 logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
                 self.save_config_change(section_name, setting_key, value)
                 return True
@@ -368,7 +370,8 @@ def run_device_service(device_index):
     logger.setLevel(log_level)
     logger.debug(f"Log level set to: {logging.getLevelName(logger.level)}")
 
-    device_section = f'Device_{device_index}'
+    # Updated device section name
+    device_section = f'Relay_Module_{device_index}'
     if not config.has_section(device_section):
         logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
         sys.exit(1)
@@ -397,12 +400,13 @@ def run_device_service(device_index):
     try:
         num_switches = device_config.getint('NumberOfSwitches')
     except (configparser.NoOptionError, ValueError):
-        logger.warning("No 'NumberOfSwitches' found in [Global] section. Defaulting to 1 switch.")
+        logger.warning(f"No 'NumberOfSwitches' found in [{device_section}] section. Defaulting to 1 switch.")
         num_switches = 1
 
     output_configs = []
-    for j in range(1, num_switches + 1):
-        output_section = f'Output_{device_index}_{j}'
+    for j in range(1, num_swches + 1):
+        # Updated output section name
+        output_section = f'switch_{device_index}_{j}'
         
         output_data = {
             'index': j,
@@ -486,10 +490,16 @@ def main():
     logger.debug(f"Starting {num_devices} virtual switch device processes...")
 
     for i in range(1, num_devices + 1):
-        device_section = f'Device_{i}'
+        # Updated device section name lookup logic
+        device_section_found = False
+        for section in config.sections():
+            if section.lower() == f'relay_module_{i}'.lower(): # Case-insensitive check
+                device_section = section
+                device_section_found = True
+                break
         
-        if not config.has_section(device_section):
-            logger.warning(f"Configuration section '{device_section}' not found. Skipping device {i}.")
+        if not device_section_found:
+            logger.warning(f"Configuration section for Relay_Module_{i} not found. Skipping device {i}.")
             continue
             
         cmd = [sys.executable, script_path, str(i)]
