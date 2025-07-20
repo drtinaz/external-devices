@@ -187,15 +187,15 @@ def create_or_edit_config():
         choice = input("Enter your choice (1, 2, or 3): ")
 
         if choice == '1':
-            print("Running: /data/MQTT-switches/setup install")
+            print("Running: /data/venus-os_virtual-devices/setup install")
             try:
-                subprocess.run(['/data/MQTT-switches/setup', 'install'], check=True)
+                subprocess.run(['/data/venus-os_virtual-devices/setup', 'install'], check=True)
                 print("Service installed and activated successfully. Rebooting system...")
                 subprocess.run(['reboot'], check=True)
             except subprocess.CalledProcessError as e:
                 print(f"Error installing service or rebooting: {e}")
             except FileNotFoundError:
-                print("Error: '/data/MQTT-switches/setup' command not found. Please ensure the setup script exists.")
+                print("Error: '/data/venus-os_virtual-devices/setup' command not found. Please ensure the setup script exists.")
             break
         elif choice == '2':
             print("Rebooting system...")
