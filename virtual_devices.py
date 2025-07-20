@@ -11,12 +11,8 @@ import time
 import paho.mqtt.client as mqtt
 import threading
 
-# --- BEGIN: MODIFIED LOGGING SETUP ---
-# Get the root logger instance
 logger = logging.getLogger()
 
-# Remove all existing handlers from the root logger
-# This is crucial for running as a service to prevent logging to the wrong place
 for handler in logger.handlers[:]:
     logger.removeHandler(handler)
 
@@ -33,15 +29,12 @@ logger.addHandler(console_handler)
 # Set the root logger's level low enough to catch everything
 # The log level from the config file will filter what is actually written
 logger.setLevel(logging.DEBUG)
-# --- END: MODIFIED LOGGING SETUP ---
 
 # --- BEGIN: CENTRALIZED CONFIG FILE PATH ---
 # Set the global path for the config file as requested by the user.
 # Changed from '/data/switches.config.ini' to the new path
-CONFIG_FILE_PATH = '/data/setupOptions/MQTT-switches/optionsSet'
-# --- END: CENTRALIZED CONFIG FILE PATH ---
+CONFIG_FILE_PATH = '/data/setupOptions/venus-os_virtual-devices/optionsSet'
 
-# A more reliable way to find velib_python
 try:
     sys.path.insert(1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
     from vedbus import VeDbusService
@@ -49,13 +42,9 @@ except ImportError:
     logger.critical("Cannot find vedbus library. Please ensure it's in the correct path.")
     sys.exit(1)
 
-# Removed generate_random_serial function as it will no longer be used.
-
 class DbusMyTestSwitch(VeDbusService):
 
     def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload):
-        # Use the modern, recommended registration method.
-        # Paths are added first, then the service is registered.
         super().__init__(service_name, register=False)
 
         # Store device and output config data for saving changes
@@ -486,9 +475,9 @@ def main():
     logger.debug(f"Log level set to: {logging.getLevelName(logger.level)}")
 
     try:
-        num_devices = config.getint('Global', 'NumberOfDevices')
+        num_devices = config.getint('Global', 'numberofmodules')
     except (configparser.NoSectionError, configparser.NoOptionError):
-        logger.warning("No 'NumberOfDevices' found in [Global] section. Defaulting to 1 device.")
+        logger.warning("No 'numberofmodules' found in [Global] section. Defaulting to 1 device.")
         num_devices = 1
 
     script_path = os.path.abspath(sys.argv[0])
