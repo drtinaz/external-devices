@@ -23,8 +23,29 @@ def create_or_edit_config():
     file_exists = os.path.exists(config_path)
 
     if file_exists:
-        config.read(config_path)
-        print(f"Existing config file found at {config_path}. It will be updated.")
+        print(f"Existing config file found at {config_path}.")
+        while True:
+            print("\n--- Configuration Options ---")
+            print("1) Continue to configuration (update existing)")
+            print("2) Delete existing configuration and exit (WARNING: This cannot be undone!)")
+            
+            choice = input("Enter your choice (1 or 2): ")
+
+            if choice == '1':
+                config.read(config_path)
+                print("Continuing to update existing configuration.")
+                break
+            elif choice == '2':
+                confirm = input("Are you absolutely sure you want to delete the configuration file? This cannot be undone! (yes/no): ")
+                if confirm.lower() == 'yes':
+                    os.remove(config_path)
+                    print(f"Configuration file deleted: {config_path}")
+                else:
+                    print("Deletion cancelled.")
+                print("Exiting script.")
+                return # Exit the function and script
+            else:
+                print("Invalid choice. Please enter 1 or 2.")
     else:
         print(f"No existing config file found. A new one will be created at {config_path}.")
 
@@ -426,9 +447,9 @@ def create_or_edit_config():
         print("\n--- Service Options ---")
         print("1) Install and activate service (system will reboot)")
         print("2) Restart service (system will reboot)")
-        print("3) Quit and exit")
+        print("3) Quit and exit") # Reverted to original option 3
         
-        choice = input("Enter your choice (1, 2, or 3): ")
+        choice = input("Enter your choice (1, 2, or 3): ") # Reverted prompt
 
         if choice == '1':
             print("Running: /data/venus-os_virtual-devices/setup install")
@@ -450,11 +471,11 @@ def create_or_edit_config():
             except FileNotFoundError:
                 print("Error: 'sudo' command not found. Please ensure sudo is in your PATH.")
             break
-        elif choice == '3':
+        elif choice == '3': # Original option 3
             print("Exiting script.")
             break
         else:
-            print("Invalid choice. Please enter 1, 2, or 3.")
+            print("Invalid choice. Please enter 1, 2, or 3.") # Reverted choices
 
 if __name__ == "__main__":
     create_or_edit_config()
