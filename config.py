@@ -61,6 +61,52 @@ def create_or_edit_config():
             print("Invalid input. Please enter a positive integer for the number of relay modules.")
     config.set('Global', 'numberofmodules', str(num_relay_modules))
 
+    # Prompt for number of temperature sensors (NEW)
+    default_num_temp_sensors_initial = 0 if not file_exists else 0
+    current_num_temp_sensors = config.getint('Global', 'numberoftempsensors', fallback=default_num_temp_sensors_initial)
+    while True:
+        try:
+            num_temp_sensors_input = input(f"Enter the number of temperature sensors (current: {current_num_temp_sensors if current_num_temp_sensors >= 0 else 'not set'}): ")
+            if num_temp_sensors_input:
+                num_temp_sensors = int(num_temp_sensors_input)
+                if num_temp_sensors < 0:
+                    raise ValueError
+                break
+            elif current_num_temp_sensors >= 0:
+                num_temp_sensors = current_num_temp_sensors
+                break
+            elif not file_exists:
+                num_temp_sensors = default_num_temp_sensors_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+    config.set('Global', 'numberoftempsensors', str(num_temp_sensors))
+
+    # Prompt for number of tank sensors (NEW)
+    default_num_tank_sensors_initial = 0 if not file_exists else 0
+    current_num_tank_sensors = config.getint('Global', 'numberoftanksensors', fallback=default_num_tank_sensors_initial)
+    while True:
+        try:
+            num_tank_sensors_input = input(f"Enter the number of tank sensors (current: {current_num_tank_sensors if current_num_tank_sensors >= 0 else 'not set'}): ")
+            if num_tank_sensors_input:
+                num_tank_sensors = int(num_tank_sensors_input)
+                if num_tank_sensors < 0:
+                    raise ValueError
+                break
+            elif current_num_tank_sensors >= 0:
+                num_tank_sensors = current_num_tank_sensors
+                break
+            elif not file_exists:
+                num_tank_sensors = default_num_tank_sensors_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+    config.set('Global', 'numberoftanksensors', str(num_tank_sensors))
+
     # Relay module settings
     for i in range(1, num_relay_modules + 1):
         relay_module_section = f'Relay_Module_{i}'
@@ -151,6 +197,88 @@ def create_or_edit_config():
             current_mqtt_command_topic = config.get(switch_section, 'mqttcommandtopic', fallback='path/to/mqtt/topic')
             mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
             config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
+
+    # Temperature Sensor settings (NEW SECTION)
+    for i in range(1, num_temp_sensors + 1):
+        temp_sensor_section = f'Temp_Sensor_{i}'
+        if not config.has_section(temp_sensor_section):
+            config.add_section(temp_sensor_section)
+
+        # Device instance
+        current_device_instance = config.getint(temp_sensor_section, 'deviceinstance', fallback=200 + (i - 1))
+        device_instance_input = input(f"Enter device instance for Temperature Sensor {i} (current: {current_device_instance}): ")
+        config.set(temp_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+
+        # Custom name
+        current_custom_name = config.get(temp_sensor_section, 'customname', fallback=f'Temperature Sensor {i}')
+        custom_name = input(f"Enter custom name for Temperature Sensor {i} (current: {current_custom_name}): ")
+        config.set(temp_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        # Serial number - generate if not present
+        current_serial = config.get(temp_sensor_section, 'serial', fallback='')
+        if not current_serial:
+            new_serial = generate_serial()
+            print(f"No existing serial for Temperature Sensor {i}. Generating new serial: {new_serial}")
+            config.set(temp_sensor_section, 'serial', new_serial)
+        else:
+            print(f"Using existing serial for Temperature Sensor {i}: {current_serial}")
+            config.set(temp_sensor_section, 'serial', current_serial)
+
+        # Temperature state topic
+        current_temp_state_topic = config.get(temp_sensor_section, 'temperaturestatetopic', fallback='path/to/mqtt/temperature')
+        temp_state_topic = input(f"Enter MQTT temperature state topic for Temperature Sensor {i} (current: {current_temp_state_topic}): ")
+        config.set(temp_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
+
+        # Humidity state topic
+        current_humidity_state_topic = config.get(temp_sensor_section, 'humiditystatetopic', fallback='path/to/mqtt/humidity')
+        humidity_state_topic = input(f"Enter MQTT humidity state topic for Temperature Sensor {i} (current: {current_humidity_state_topic}): ")
+        config.set(temp_sensor_section, 'humiditystatetopic', humidity_state_topic if humidity_state_topic else current_humidity_state_topic)
+
+        # Battery state topic
+        current_battery_state_topic = config.get(temp_sensor_section, 'batterystatetopic', fallback='path/to/mqtt/battery')
+        battery_state_topic = input(f"Enter MQTT battery state topic for Temperature Sensor {i} (current: {current_battery_state_topic}): ")
+        config.set(temp_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
+
+    # Tank Sensor settings (NEW SECTION)
+    for i in range(1, num_tank_sensors + 1):
+        tank_sensor_section = f'Tank_Sensor_{i}'
+        if not config.has_section(tank_sensor_section):
+            config.add_section(tank_sensor_section)
+
+        # Device instance
+        current_device_instance = config.getint(tank_sensor_section, 'deviceinstance', fallback=300 + (i - 1))
+        device_instance_input = input(f"Enter device instance for Tank Sensor {i} (current: {current_device_instance}): ")
+        config.set(tank_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+
+        # Custom name
+        current_custom_name = config.get(tank_sensor_section, 'customname', fallback=f'Tank Sensor {i}')
+        custom_name = input(f"Enter custom name for Tank Sensor {i} (current: {current_custom_name}): ")
+        config.set(tank_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        # Serial number - generate if not present
+        current_serial = config.get(tank_sensor_section, 'serial', fallback='')
+        if not current_serial:
+            new_serial = generate_serial()
+            print(f"No existing serial for Tank Sensor {i}. Generating new serial: {new_serial}")
+            config.set(tank_sensor_section, 'serial', new_serial)
+        else:
+            print(f"Using existing serial for Tank Sensor {i}: {current_serial}")
+            config.set(tank_sensor_section, 'serial', current_serial)
+
+        # Level state topic
+        current_level_state_topic = config.get(tank_sensor_section, 'levelstatetopic', fallback='path/to/mqtt/level')
+        level_state_topic = input(f"Enter MQTT level state topic for Tank Sensor {i} (current: {current_level_state_topic}): ")
+        config.set(tank_sensor_section, 'levelstatetopic', level_state_topic if level_state_topic else current_level_state_topic)
+
+        # Battery state topic
+        current_battery_state_topic = config.get(tank_sensor_section, 'batterystatetopic', fallback='path/to/mqtt/battery')
+        battery_state_topic = input(f"Enter MQTT battery state topic for Tank Sensor {i} (current: {current_battery_state_topic}): ")
+        config.set(tank_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
+
+        # Temperature state topic
+        current_temp_state_topic = config.get(tank_sensor_section, 'temperaturestatetopic', fallback='path/to/mqtt/temperature')
+        temp_state_topic = input(f"Enter MQTT temperature state topic for Tank Sensor {i} (current: {current_temp_state_topic}): ")
+        config.set(tank_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
 
     # MQTT broker settings
     if not config.has_section('MQTT'):
