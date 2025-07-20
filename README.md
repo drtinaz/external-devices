@@ -1,3 +1,5 @@
+This installs a service that will provide virtual switches for venus os that can be displayed on gui v2. This has been tested on Cerbo GX but most likely can also be used on Ekrano or raspi. Node red is not required, allowing this service to be installed on regular os versions.
+
 ************ INSTALL USING KEVINS SETUP HELPER **************
 1. Install Kevins setup helper ( https://github.com/kwindrem/SetupHelper )
 3. From the package manager menu click on inactive packages and click 'new' at the top
