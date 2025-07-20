@@ -39,53 +39,53 @@ def create_or_edit_config():
 
     # Prompt for number of relay modules
     # Default to 1 if file doesn't exist, otherwise use existing or 0
-    default_num_devices_initial = 1 if not file_exists else 0
-    current_num_devices = config.getint('Global', 'numberofdevices', fallback=default_num_devices_initial)
+    default_num_relay_modules_initial = 1 if not file_exists else 0
+    current_num_relay_modules = config.getint('Global', 'numberofmodules', fallback=default_num_relay_modules_initial)
     while True:
         try:
-            num_devices_input = input(f"Enter the number of devices (current: {current_num_devices if current_num_devices > 0 else 'not set'}): ")
-            if num_devices_input:
-                num_devices = int(num_devices_input)
-                if num_devices <= 0:
+            num_relay_modules_input = input(f"Enter the number of relay modules (current: {current_num_relay_modules if current_num_relay_modules > 0 else 'not set'}): ")
+            if num_relay_modules_input:
+                num_relay_modules = int(num_relay_modules_input)
+                if num_relay_modules <= 0:
                     raise ValueError
                 break
-            elif current_num_devices > 0:
-                num_devices = current_num_devices
+            elif current_num_relay_modules > 0:
+                num_relay_modules = current_num_relay_modules
                 break
             elif not file_exists: # If new file and no input, use initial default
-                num_devices = default_num_devices_initial
+                num_relay_modules = default_num_relay_modules_initial
                 break
             else:
-                print("Invalid input. Please enter a positive integer for the number of devices.")
+                print("Invalid input. Please enter a positive integer for the number of relay modules.")
         except ValueError:
-            print("Invalid input. Please enter a positive integer for the number of devices.")
-    config.set('Global', 'numberofdevices', str(num_devices))
+            print("Invalid input. Please enter a positive integer for the number of relay modules.")
+    config.set('Global', 'numberofmodules', str(num_relay_modules))
 
-    # Device settings
-    for i in range(1, num_devices + 1):
-        device_section = f'Device_{i}'
-        output_prefix = f'Output_{i}_'
+    # Relay module settings
+    for i in range(1, num_relay_modules + 1):
+        relay_module_section = f'Relay_Module_{i}'
+        switch_prefix = f'switch_{i}_'
 
-        if not config.has_section(device_section):
-            config.add_section(device_section)
+        if not config.has_section(relay_module_section):
+            config.add_section(relay_module_section)
 
         # Device instance
-        current_device_instance = config.getint(device_section, 'deviceinstance', fallback=100 + (i - 1))
-        device_instance_input = input(f"Enter device instance for Device {i} (current: {current_device_instance}): ")
-        config.set(device_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+        current_device_instance = config.getint(relay_module_section, 'deviceinstance', fallback=100 + (i - 1))
+        device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
+        config.set(relay_module_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
 
         # Custom name
-        current_custom_name = config.get(device_section, 'customname', fallback=f'Relay Module {i}')
-        custom_name = input(f"Enter custom name for Device {i} (current: {current_custom_name}): ")
-        config.set(device_section, 'customname', custom_name if custom_name else current_custom_name)
+        current_custom_name = config.get(relay_module_section, 'customname', fallback=f'Relay Module {i}')
+        custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
+        config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
 
         # Number of switches
         # Default to 2 if file doesn't exist, otherwise use existing or 0
         default_num_switches_initial = 2 if not file_exists else 0
-        current_num_switches = config.getint(device_section, 'numberofswitches', fallback=default_num_switches_initial)
+        current_num_switches = config.getint(relay_module_section, 'numberofswitches', fallback=default_num_switches_initial)
         while True:
             try:
-                num_switches_input = input(f"Enter the number of switches for Device {i} (current: {current_num_switches if current_num_switches > 0 else 'not set'}): ")
+                num_switches_input = input(f"Enter the number of switches for Relay Module {i} (current: {current_num_switches if current_num_switches > 0 else 'not set'}): ")
                 if num_switches_input:
                     num_switches = int(num_switches_input)
                     if num_switches <= 0:
@@ -101,56 +101,56 @@ def create_or_edit_config():
                     print("Invalid input. Please enter a positive integer for the number of switches.")
             except ValueError:
                 print("Invalid input. Please enter a positive integer for the number of switches.")
-        config.set(device_section, 'numberofswitches', str(num_switches))
+        config.set(relay_module_section, 'numberofswitches', str(num_switches))
 
         # MQTT ON/OFF payload
-        current_mqtt_on = config.get(device_section, 'mqttonpayload', fallback='ON')
-        mqtt_on = input(f"Enter MQTT ON payload for Device {i} (current: {current_mqtt_on}): ")
-        config.set(device_section, 'mqttonpayload', mqtt_on if mqtt_on else current_mqtt_on)
+        current_mqtt_on = config.get(relay_module_section, 'mqttonpayload', fallback='ON')
+        mqtt_on = input(f"Enter MQTT ON payload for Relay Module {i} (current: {current_mqtt_on}): ")
+        config.set(relay_module_section, 'mqttonpayload', mqtt_on if mqtt_on else current_mqtt_on)
 
-        current_mqtt_off = config.get(device_section, 'mqttoffpayload', fallback='OFF')
-        mqtt_off = input(f"Enter MQTT OFF payload for Device {i} (current: {current_mqtt_off}): ")
-        config.set(device_section, 'mqttoffpayload', mqtt_off if mqtt_off else current_mqtt_off)
+        current_mqtt_off = config.get(relay_module_section, 'mqttoffpayload', fallback='OFF')
+        mqtt_off = input(f"Enter MQTT OFF payload for Relay Module {i} (current: {current_mqtt_off}): ")
+        config.set(relay_module_section, 'mqttoffpayload', mqtt_off if mqtt_off else current_mqtt_off)
 
-        # Device index - No longer prompting, just setting it based on loop variable 'i'
-        config.set(device_section, 'deviceindex', str(i))
+        # Relay Module index - No longer prompting, just setting it based on loop variable 'i'
+        config.set(relay_module_section, 'deviceindex', str(i))
 
         # Serial number - generate if not present
-        current_serial = config.get(device_section, 'serial', fallback='')
+        current_serial = config.get(relay_module_section, 'serial', fallback='')
         if not current_serial:
             new_serial = generate_serial()
-            print(f"No existing serial for Device {i}. Generating new serial: {new_serial}")
-            config.set(device_section, 'serial', new_serial)
+            print(f"No existing serial for Relay Module {i}. Generating new serial: {new_serial}")
+            config.set(relay_module_section, 'serial', new_serial)
         else:
-            print(f"Using existing serial for Device {i}: {current_serial}")
-            config.set(device_section, 'serial', current_serial) # Ensure it's explicitly set even if not changed
+            print(f"Using existing serial for Relay Module {i}: {current_serial}")
+            config.set(relay_module_section, 'serial', current_serial) # Ensure it's explicitly set even if not changed
 
 
-        # Output settings for each switch
+        # switch settings for each switch
         for j in range(1, num_switches + 1):
-            output_section = f'{output_prefix}{j}'
-            if not config.has_section(output_section):
-                config.add_section(output_section)
+            switch_section = f'{switch_prefix}{j}'
+            if not config.has_section(switch_section):
+                config.add_section(switch_section)
 
-            # Custom name for output
-            current_output_custom_name = config.get(output_section, 'customname', fallback=f'Output {j}')
-            output_custom_name = input(f"Enter custom name for Device {i}, Output {j} (current: {current_output_custom_name}): ")
-            config.set(output_section, 'customname', output_custom_name if output_custom_name else current_output_custom_name)
+            # Custom name for switch
+            current_switch_custom_name = config.get(switch_section, 'customname', fallback=f'switch {j}')
+            switch_custom_name = input(f"Enter custom name for Relay Module {i}, switch {j} (current: {current_switch_custom_name}): ")
+            config.set(switch_section, 'customname', switch_custom_name if switch_custom_name else current_switch_custom_name)
 
-            # Group for output - changed to use device number
-            current_output_group = config.get(output_section, 'group', fallback=f'Group{i}')
-            output_group = input(f"Enter group for Device {i}, Output {j} (current: {current_output_group}): ")
-            config.set(output_section, 'group', output_group if output_group else current_output_group)
+            # Group for switch - changed to use Relay Module number
+            current_switch_group = config.get(switch_section, 'group', fallback=f'Group{i}')
+            switch_group = input(f"Enter group for Relay Module {i}, switch {j} (current: {current_switch_group}): ")
+            config.set(switch_section, 'group', switch_group if switch_group else current_switch_group)
 
             # MQTT state topic
-            current_mqtt_state_topic = config.get(output_section, 'mqttstatetopic', fallback='path/to/mqtt/topic')
-            mqtt_state_topic = input(f"Enter MQTT state topic for Device {i}, Output {j} (current: {current_mqtt_state_topic}): ")
-            config.set(output_section, 'mqttstatetopic', mqtt_state_topic if mqtt_state_topic else current_mqtt_state_topic)
+            current_mqtt_state_topic = config.get(switch_section, 'mqttstatetopic', fallback='path/to/mqtt/topic')
+            mqtt_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, switch {j} (current: {current_mqtt_state_topic}): ")
+            config.set(switch_section, 'mqttstatetopic', mqtt_state_topic if mqtt_state_topic else current_mqtt_state_topic)
 
             # MQTT command topic
-            current_mqtt_command_topic = config.get(output_section, 'mqttcommandtopic', fallback='path/to/mqtt/topic')
-            mqtt_command_topic = input(f"Enter MQTT command topic for Device {i}, Output {j} (current: {current_mqtt_command_topic}): ")
-            config.set(output_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
+            current_mqtt_command_topic = config.get(switch_section, 'mqttcommandtopic', fallback='path/to/mqtt/topic')
+            mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
+            config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
 
     # MQTT broker settings
     if not config.has_section('MQTT'):
