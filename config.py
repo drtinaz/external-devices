@@ -13,7 +13,7 @@ def create_or_edit_config():
     Creates or edits a config file based on user input.
     The file will be located in /data/setupOptions/venus-os_virtual-devices and named optionsSet.
     """
-    config_dir = '/data/setupOptions/venus-os_virtual devices'
+    config_dir = '/data/setupOptions/venus-os_virtual-devices'
     config_path = os.path.join(config_dir, 'optionsSet') # Updated config file name
 
     # Ensure the directory exists
