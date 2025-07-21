@@ -10,6 +10,7 @@ import subprocess
 import time
 import paho.mqtt.client as mqtt
 import threading
+import json # Import the json module
 
 logger = logging.getLogger()
 
@@ -42,7 +43,7 @@ except ImportError:
     logger.critical("Cannot find vedbus library. Please ensure it's in the correct path.")
     sys.exit(1)
 
-class DbusMyTestSwitch(VeDbusService):
+class DbusSwitch(VeDbusService):
 
     def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload):
         super().__init__(service_name, register=False)
@@ -189,20 +190,33 @@ class DbusMyTestSwitch(VeDbusService):
     def on_mqtt_message(self, client, userdata, msg):
         """
         MQTT callback for when a message is received on a subscribed topic.
-        Only accepts payloads as defined in the config file.
+        Handles JSON payloads with a 'value' key, or raw string payloads.
         """
         try:
-            payload = msg.payload.decode().strip().lower()
+            payload_str = msg.payload.decode().strip()
             topic = msg.topic
-            logger.debug(f"Received MQTT message on topic '{topic}': {payload}")
+            logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
 
+            processed_payload = None
+            try:
+                # Attempt to parse as JSON first
+                json_payload = json.loads(payload_str)
+                if isinstance(json_payload, dict) and "value" in json_payload:
+                    processed_payload = str(json_payload["value"]).lower()
+                else:
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}. Falling back to raw payload.")
+                    processed_payload = payload_str.lower()
+            except json.JSONDecodeError:
+                # If not JSON, treat the original payload as a raw string
+                processed_payload = payload_str.lower()
+            
             new_state = None
-            if payload == self.mqtt_on_payload.lower():
+            if processed_payload == self.mqtt_on_payload.lower():
                 new_state = 1
-            elif payload == self.mqtt_off_payload.lower():
+            elif processed_payload == self.mqtt_off_payload.lower():
                 new_state = 0
             else:
-                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{payload}'. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
+                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{processed_payload}'. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
                 return
             
             # Find the corresponding D-Bus path for this topic
@@ -330,15 +344,206 @@ class DbusMyTestSwitch(VeDbusService):
         
         return False # Return False for GLib.idle_add to run only once
 
-def run_device_service(device_index):
+class DbusTempSensor(VeDbusService):
+    TEMPERATURE_TYPES = {
+        'battery': 0,
+        'fridge': 1,
+        'generic': 2,
+        'room': 3,
+        'outdoor': 4,
+        'water heater': 5,
+        'freezer': 6
+    }
+
+    def __init__(self, service_name, device_config, serial_number, mqtt_config):
+        super().__init__(service_name, register=False)
+
+        self.device_config = device_config
+        self.device_index = device_config.getint('DeviceIndex')
+
+        # General device settings
+        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
+        self.add_path('/Mgmt/ProcessVersion', '0.1.17') # Updated version
+        self.add_path('/Mgmt/Connection', 'Virtual')
+        
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
+        self.add_path('/ProductId', 49248) # Product ID for virtual temperature sensor
+        self.add_path('/ProductName', 'Virtual temperature') # Fixed product name
+        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Serial', serial_number)
+        
+        self.add_path('/Status', 0) # 0 for OK
+        self.add_path('/Connected', 1) # 1 for connected
+
+        # Temperature specific paths
+        self.add_path('/Temperature', 0.0) # Initial temperature
+        self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
+        self.add_path('/Humidity', 0.0) # Initial Humidity
+
+        # TemperatureType mapping and D-Bus path
+        initial_type_str = self.device_config.get('Type', 'generic').lower()
+        initial_type_int = self.TEMPERATURE_TYPES.get(initial_type_str, self.TEMPERATURE_TYPES['generic'])
+        self.add_path('/TemperatureType', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
+
+        # MQTT specific members
+        self.mqtt_client = None
+        self.mqtt_config = mqtt_config
+        self.dbus_path_to_state_topic_map = {
+            '/Temperature': self.device_config.get('TemperatureStateTopic'),
+            '/Humidity': self.device_config.get('HumidityStateTopic'),
+            '/BatteryVoltage': self.device_config.get('BatteryStateTopic')
+        }
+
+        # Initialize and connect the MQTT client
+        self.setup_mqtt_client()
+        
+        self.register()
+        logger.info(f"Service '{service_name}' for device '{self.device_config.get('CustomName')}' registered on D-Bus.")
+
+    def setup_mqtt_client(self, retry_interval=5, max_retries=12):
+        """
+        Initializes and starts the MQTT client with retry logic.
+        """
+        self.mqtt_client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self['/Serial']
+        )
+        
+        if self.mqtt_config.get('Username'):
+            self.mqtt_client.username_pw_set(
+                self.mqtt_config.get('Username'),
+                self.mqtt_config.get('Password')
+            )
+            
+        self.mqtt_client.on_connect = self.on_mqtt_connect
+        self.mqtt_client.on_message = self.on_mqtt_message
+        
+        retries = 0
+        while retries < max_retries:
+            try:
+                logger.debug(f"Attempting to connect to MQTT broker ({retries + 1}/{max_retries})...")
+                self.mqtt_client.connect(
+                    self.mqtt_config.get('BrokerAddress'),
+                    self.mqtt_config.getint('Port', 1883),
+                    60
+                )
+                self.mqtt_client.loop_start()
+                logger.debug("MQTT client started.")
+                return
+            except Exception as e:
+                logger.error(f"Failed to connect to MQTT broker: {e}. Retrying in {retry_interval} seconds...")
+                time.sleep(retry_interval)
+                retries += 1
+        
+        logger.critical(f"Failed to connect to MQTT broker after {max_retries} attempts. Exiting.")
+        sys.exit(1)
+
+    def on_mqtt_connect(self, client, userdata, flags, rc, properties):
+        if rc == 0:
+            logger.debug("Connected to MQTT Broker!")
+            for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+                if topic:
+                    client.subscribe(topic)
+                    logger.debug(f"Subscribed to MQTT state topic: {topic} for D-Bus path {dbus_path}")
+        else:
+            logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+
+    def on_mqtt_message(self, client, userdata, msg):
+        try:
+            payload_str = msg.payload.decode().strip()
+            topic = msg.topic
+            logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
+
+            dbus_path = None
+            for path, t in self.dbus_path_to_state_topic_map.items():
+                if t == topic:
+                    dbus_path = path
+                    break
+
+            if not dbus_path:
+                logger.warning(f"Received MQTT message on unknown topic: {topic}")
+                return
+
+            value = None
+            try:
+                # Attempt to parse as JSON first
+                json_payload = json.loads(payload_str)
+                if isinstance(json_payload, dict) and "value" in json_payload:
+                    value = float(json_payload["value"])
+                else:
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    return
+            except json.JSONDecodeError:
+                # If not JSON, try to parse as a direct float
+                try:
+                    value = float(payload_str)
+                except ValueError:
+                    logger.warning(f"Invalid numeric payload received for topic '{topic}': '{payload_str}'. Expected a number or a JSON object with a 'value' key.")
+                    return
+            
+            # Use GLib.idle_add to schedule the D-Bus update in the main thread
+            GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
+            
+        except Exception as e:
+            logger.error(f"Error processing MQTT message: {e}")
+
+    def handle_dbus_change(self, path, value):
+        """
+        Callback function to handle changes to D-Bus paths for temperature sensors.
+        """
+        section_name = f'Temp_Sensor_{self.device_index}'
+        
+        if path == '/CustomName':
+            key_name = 'CustomName'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
+            self.save_config_change(section_name, key_name, value)
+            return True
+        elif path == '/TemperatureType':
+            key_name = 'Type'
+            # Convert integer value back to string for saving to config
+            type_str = next((k for k, v in self.TEMPERATURE_TYPES.items() if v == value), None)
+            if type_str:
+                logger.debug(f"D-Bus settings change triggered for {path} with value '{type_str}'. Saving to config file.")
+                self.save_config_change(section_name, key_name, type_str)
+                return True
+            else:
+                logger.warning(f"Invalid TemperatureType value received: {value}. Not saving to config.")
+                return False
+        
+        logger.warning(f"Unhandled D-Bus change request for path: {path}")
+        return False
+
+    def save_config_change(self, section, key, value):
+        config = configparser.ConfigParser()
+        try:
+            config.read(CONFIG_FILE_PATH)
+            if not config.has_section(section):
+                logger.warning(f"Creating new section '{section}' in config file.")
+                config.add_section(section)
+            config.set(section, key, str(value))
+            with open(CONFIG_FILE_PATH, 'w') as configfile:
+                config.write(configfile)
+            logger.debug(f"Successfully saved setting '{key}' to section '{section}' in config file.")
+        except Exception as e:
+            logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
+            
+    def update_dbus_from_mqtt(self, path, value):
+        """
+        A centralized method to handle MQTT-initiated state changes to D-Bus.
+        """
+        self[path] = value
+        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt")
+        
+        return False # Return False for GLib.idle_add to run only once
+
+def run_device_service(device_type, device_index):
     """
-    Main function for a single D-Bus service process.
+    Main function for a single D-Bus service process, now distinguishing by device type.
     """
     from dbus.mainloop.glib import DBusGMainLoop
     DBusGMainLoop(set_as_default=True)
     
-    # Log the start of this specific device process
-    logger.info(f"Starting D-Bus service process for device {device_index}.")
+    logger.info(f"Starting D-Bus service process for {device_type} {device_index}.")
 
     config = configparser.ConfigParser()
     if not os.path.exists(CONFIG_FILE_PATH):
@@ -351,7 +556,6 @@ def run_device_service(device_index):
         logger.critical(f"Error parsing configuration file: {e}")
         sys.exit(1)
         
-    # Mapping for log levels
     LOG_LEVELS = {
         'DEBUG': logging.DEBUG,
         'INFO': logging.INFO,
@@ -360,7 +564,6 @@ def run_device_service(device_index):
         'CRITICAL': logging.CRITICAL
     }
     
-    # Get log level from config, default to INFO if not found or invalid
     if config.has_section('Global'):
         log_level_str = config['Global'].get('LogLevel', 'INFO').upper()
         log_level = LOG_LEVELS.get(log_level_str, logging.INFO)
@@ -370,72 +573,85 @@ def run_device_service(device_index):
     logger.setLevel(log_level)
     logger.debug(f"Log level set to: {logging.getLevelName(logger.level)}")
 
-    # Updated device section name
-    device_section = f'Relay_Module_{device_index}'
-    if not config.has_section(device_section):
-        logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
-        sys.exit(1)
+    if device_type == 'switch':
+        device_section = f'Relay_Module_{device_index}'
+        if not config.has_section(device_section):
+            logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
+            sys.exit(1)
+            
+        device_config = config[device_section]
         
-    device_config = config[device_section]
-    
-    # --- BEGIN: NEW CONFIG READING ---
-    mqtt_on_payload = device_config.get('MqttOnPayload', 'ON')
-    mqtt_off_payload = device_config.get('MqttOffPayload', 'OFF')
-    # --- END: NEW CONFIG READING ---
+        mqtt_on_payload = device_config.get('MqttOnPayload', 'ON')
+        mqtt_off_payload = device_config.get('MqttOffPayload', 'OFF')
 
-    # Store the device index in the device config for later use
-    device_config['DeviceIndex'] = str(device_index)
+        device_config['DeviceIndex'] = str(device_index)
+        
+        serial_number = device_config.get('Serial')
+        if not serial_number or serial_number.strip() == '':
+            logger.critical(f"Serial number not found or is empty for device {device_index} in config. Exiting. Please run the setup script to generate a serial.")
+            sys.exit(1)
+        else:
+            logger.debug(f"Using existing serial number '{serial_number}' for device {device_index}.")
+
+        try:
+            num_switches = device_config.getint('NumberOfSwitches')
+        except (configparser.NoOptionError, ValueError):
+            logger.warning(f"No 'NumberOfSwitches' found in [{device_section}] section. Defaulting to 1 switch.")
+            num_switches = 1
+
+        output_configs = []
+        for j in range(1, num_switches + 1):
+            output_section = f'switch_{device_index}_{j}'
+            
+            output_data = {
+                'index': j,
+                'name': f'Switch {j}',
+                'custom_name': '',
+                'group': '',
+                'MqttStateTopic': None,
+                'MqttCommandTopic': None,
+            }
+
+            if config.has_section(output_section):
+                output_settings = config[output_section]
+                output_data['custom_name'] = output_settings.get('CustomName', '')
+                output_data['group'] = output_settings.get('Group', '')
+                output_data['MqttStateTopic'] = output_settings.get('MqttStateTopic', None)
+                output_data['MqttCommandTopic'] = output_settings.get('MqttCommandTopic', None)
+            
+            output_configs.append(output_data)
+
+        service_name = f'com.victronenergy.switch.virtual_{serial_number}'
+
+        mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
+
+        DbusSwitch(service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload)
     
-    # --- BEGIN: MODIFIED SERIAL NUMBER HANDLING ---
-    # Now, the serial number MUST be present in the config file.
-    # If not found or empty, log a critical error and exit.
-    serial_number = device_config.get('Serial')
-    if not serial_number or serial_number.strip() == '':
-        logger.critical(f"Serial number not found or is empty for device {device_index} in config. Exiting. Please run the setup script to generate a serial.")
-        sys.exit(1)
+    elif device_type == 'temp_sensor':
+        device_section = f'Temp_Sensor_{device_index}'
+        if not config.has_section(device_section):
+            logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
+            sys.exit(1)
+            
+        device_config = config[device_section]
+        device_config['DeviceIndex'] = str(device_index)
+
+        serial_number = device_config.get('Serial')
+        if not serial_number or serial_number.strip() == '':
+            logger.critical(f"Serial number not found or is empty for temperature sensor {device_index} in config. Exiting. Please run the setup script to generate a serial.")
+            sys.exit(1)
+        else:
+            logger.debug(f"Using existing serial number '{serial_number}' for temperature sensor {device_index}.")
+        
+        service_name = f'com.victronenergy.temperature.virtual_{serial_number}'
+        mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
+
+        DbusTempSensor(service_name, device_config, serial_number, mqtt_config)
+        
     else:
-        logger.debug(f"Using existing serial number '{serial_number}' for device {device_index}.")
-    # --- END: MODIFIED SERIAL NUMBER HANDLING ---
+        logger.critical(f"Unknown device type: {device_type}")
+        sys.exit(1)
 
-    try:
-        num_switches = device_config.getint('NumberOfSwitches')
-    except (configparser.NoOptionError, ValueError):
-        logger.warning(f"No 'NumberOfSwitches' found in [{device_section}] section. Defaulting to 1 switch.")
-        num_switches = 1
-
-    output_configs = []
-    for j in range(1, num_switches + 1):
-        # Updated output section name
-        output_section = f'switch_{device_index}_{j}'
-        
-        output_data = {
-            'index': j,
-            'name': f'Switch {j}',
-            'custom_name': '',
-            'group': '',
-            'MqttStateTopic': None,
-            'MqttCommandTopic': None,
-        }
-
-        if config.has_section(output_section):
-            output_settings = config[output_section]
-            output_data['custom_name'] = output_settings.get('CustomName', '')
-            output_data['group'] = output_settings.get('Group', '')
-            output_data['MqttStateTopic'] = output_settings.get('MqttStateTopic', None)
-            output_data['MqttCommandTopic'] = output_settings.get('MqttCommandTopic', None)
-        
-        output_configs.append(output_data)
-
-    service_name = f'com.victronenergy.switch.virtual_{serial_number}'
-
-    # Get MQTT configuration
-    mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
-
-    # Pass the MQTT config to the DbusMyTestSwitch class
-    # --- BEGIN: UPDATED CONSTRUCTOR CALL ---
-    DbusMyTestSwitch(service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload)
-    # --- END: UPDATED CONSTRUCTOR CALL ---
-    
     logger.debug('Connected to D-Bus, and switching over to GLib.MainLoop() (= event based)')
     
     mainloop = GLib.MainLoop()
@@ -445,8 +661,7 @@ def main():
     """
     The main launcher function that runs as the parent process.
     """
-    # Log the start of the overall launcher script
-    logger.info("Starting D-Bus Virtual Switch service launcher.")
+    logger.info("Starting D-Bus Virtual Devices service launcher.")
 
     config = configparser.ConfigParser()
     if not os.path.exists(CONFIG_FILE_PATH):
@@ -459,7 +674,6 @@ def main():
         logger.critical(f"Error parsing configuration file: {e}")
         sys.exit(1)
     
-    # Mapping for log levels
     LOG_LEVELS = {
         'DEBUG': logging.DEBUG,
         'INFO': logging.INFO,
@@ -468,7 +682,6 @@ def main():
         'CRITICAL': logging.CRITICAL
     }
     
-    # Get log level from config, default to INFO if not found or invalid
     if config.has_section('Global'):
         log_level_str = config['Global'].get('LogLevel', 'INFO').upper()
         log_level = LOG_LEVELS.get(log_level_str, logging.INFO)
@@ -478,39 +691,63 @@ def main():
     logger.setLevel(log_level)
     logger.debug(f"Log level set to: {logging.getLevelName(logger.level)}")
 
-    try:
-        num_devices = config.getint('Global', 'numberofmodules')
-    except (configparser.NoSectionError, configparser.NoOptionError):
-        logger.warning("No 'numberofmodules' found in [Global] section. Defaulting to 1 device.")
-        num_devices = 1
-
-    script_path = os.path.abspath(sys.argv[0])
     processes = []
-    
-    logger.debug(f"Starting {num_devices} virtual switch device processes...")
+    script_path = os.path.abspath(sys.argv[0])
 
-    for i in range(1, num_devices + 1):
-        # Updated device section name lookup logic
+    # Handle virtual switch devices
+    try:
+        num_switch_modules = config.getint('Global', 'numberofmodules')
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        logger.warning("No 'numberofmodules' found in [Global] section. Defaulting to 0 switch modules.")
+        num_switch_modules = 0
+
+    logger.debug(f"Starting {num_switch_modules} virtual switch device processes...")
+    for i in range(1, num_switch_modules + 1):
         device_section_found = False
         for section in config.sections():
-            if section.lower() == f'relay_module_{i}'.lower(): # Case-insensitive check
-                device_section = section
+            if section.lower() == f'relay_module_{i}'.lower():
                 device_section_found = True
                 break
         
         if not device_section_found:
-            logger.warning(f"Configuration section for Relay_Module_{i} not found. Skipping device {i}.")
+            logger.warning(f"Configuration section for Relay_Module_{i} not found. Skipping switch device {i}.")
             continue
             
-        cmd = [sys.executable, script_path, str(i)]
-        
+        cmd = [sys.executable, script_path, 'switch', str(i)]
         try:
             process = subprocess.Popen(cmd, env=os.environ, close_fds=True)
             processes.append(process)
-            logger.debug(f"Started process for virtual device {i} (PID: {process.pid})")
+            logger.debug(f"Started process for virtual switch device {i} (PID: {process.pid})")
         except Exception as e:
-            logger.error(f"Failed to start process for device {i}: {e}")
+            logger.error(f"Failed to start process for switch device {i}: {e}")
+
+    # Handle virtual temperature sensor devices
+    try:
+        num_temp_sensors = config.getint('Global', 'numberoftempsensors')
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        logger.warning("No 'numberoftempsensors' found in [Global] section. Defaulting to 0 temperature sensors.")
+        num_temp_sensors = 0
+
+    logger.debug(f"Starting {num_temp_sensors} virtual temperature sensor processes...")
+    for i in range(1, num_temp_sensors + 1):
+        device_section_found = False
+        for section in config.sections():
+            if section.lower() == f'temp_sensor_{i}'.lower():
+                device_section_found = True
+                break
+        
+        if not device_section_found:
+            logger.warning(f"Configuration section for Temp_Sensor_{i} not found. Skipping temperature sensor {i}.")
+            continue
             
+        cmd = [sys.executable, script_path, 'temp_sensor', str(i)]
+        try:
+            process = subprocess.Popen(cmd, env=os.environ, close_fds=True)
+            processes.append(process)
+            logger.debug(f"Started process for virtual temperature sensor {i} (PID: {process.pid})")
+        except Exception as e:
+            logger.error(f"Failed to start process for temperature sensor {i}: {e}")
+
     try:
         while True:
             time.sleep(1)
@@ -522,7 +759,7 @@ def main():
             p.wait()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        run_device_service(sys.argv[1])
+    if len(sys.argv) > 2:
+        run_device_service(sys.argv[1], sys.argv[2])
     else:
         main()
