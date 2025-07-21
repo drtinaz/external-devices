@@ -726,13 +726,11 @@ class DbusTankSensor(VeDbusService):
     def _calculate_level_and_remaining(self):
         """
         Calculates Level and Remaining based on RawValue, RawValueEmpty, RawValueFull, and Capacity.
-        Accounts for inverted remaining capacity for waste and black water tanks.
         """
         raw_value = self['/RawValue']
         raw_value_empty = self['/RawValueEmpty']
         raw_value_full = self['/RawValueFull']
         capacity = self['/Capacity']
-        fluid_type = self['/FluidType'] # Get the current fluid type
 
         level = 0.0
         if raw_value_full != raw_value_empty:
@@ -754,12 +752,7 @@ class DbusTankSensor(VeDbusService):
                             f"but RawValue ({raw_value}) is different. Cannot calculate level reliably.")
              level = 0.0 # Default to empty in ambiguous cases
 
-        # Calculate remaining capacity, inverting for waste and black water
-        if fluid_type in [self.FLUID_TYPES['waste water'], self.FLUID_TYPES['black water']]:
-            remaining = ((100.0 - level) / 100.0) * capacity
-            logger.debug(f"Inverting remaining capacity for fluid type {fluid_type}: Level {level}% -> Remaining {remaining}")
-        else:
-            remaining = (level / 100.0) * capacity
+        remaining = (level / 100.0) * capacity
 
         # Update D-Bus values, triggering signals
         if self['/Level'] != round(level, 2): # Round to 2 decimal places for display consistency
@@ -790,8 +783,6 @@ class DbusTankSensor(VeDbusService):
             if fluid_type_str:
                 logger.debug(f"D-Bus settings change triggered for {path} with value '{fluid_type_str}'. Saving to config file.")
                 self.save_config_change(section_name, key_name, fluid_type_str)
-                # Recalculate remaining capacity if fluid type changes
-                GLib.idle_add(self._calculate_level_and_remaining)
                 return True
             else:
                 logger.warning(f"Invalid FluidType value received: {value}. Not saving to config.")
