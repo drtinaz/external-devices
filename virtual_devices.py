@@ -895,6 +895,243 @@ class DbusTankSensor(VeDbusService):
         
         return False # Return False for GLib.idle_add to run only once
 
+class DbusBattery(VeDbusService):
+
+    def __init__(self, service_name, device_config, serial_number, mqtt_config):
+        super().__init__(service_name, register=False)
+
+        self.device_config = device_config
+        self.device_index = device_config.getint('DeviceIndex')
+
+        # General device settings
+        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
+        self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
+        self.add_path('/Mgmt/Connection', 'Virtual')
+        
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
+        self.add_path('/ProductId', 49253) # Product ID for virtual battery
+        self.add_path('/ProductName', 'Virtual battery') # Fixed product name
+        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Serial', serial_number)
+        
+        self.add_path('/Connected', 1)
+        self.add_path('/ErrorCode', 0)
+        self.add_path('/NrOfDistributors', 0) # Not clear from example, assuming 0
+        self.add_path('/Soc', 0.0) # Initial State of Charge
+        self.add_path('/Soh', 100.0) # Initial State of Health
+        self.add_path('/System/MinCellVoltage', None) # As per example
+        
+        # Capacity is writable and linked to config
+        self.add_path('/Capacity', self.device_config.getfloat('CapacityAh'), writeable=True, onchangecallback=self.handle_dbus_change)
+
+        # DC Paths
+        self.add_path('/Dc/0/Current', 0.0)
+        self.add_path('/Dc/0/Power', 0.0)
+        self.add_path('/Dc/0/Temperature', 25.0) # Default to 25C
+        self.add_path('/Dc/0/Voltage', 0.0)
+
+        # Info Paths (not writable via D-Bus directly, derived or received from MQTT)
+        self.add_path('/Info/ChargeRequest', 0)
+        self.add_path('/Info/MaxChargeCurrent', None)
+        self.add_path('/Info/MaxChargeVoltage', None)
+        self.add_path('/Info/MaxDischargeCurrent', None)
+        self.add_path('/Info/BatteryLowVoltage', None) # As per example, seems to be a static info path
+
+        # Alarm Paths (not writable via D-Bus, received via MQTT or derived)
+        # All alarms default to 0 (No alarm) as per example
+        self.add_path('/Alarms/CellImbalance', 0)
+        self.add_path('/Alarms/HighCellVoltage', 0)
+        self.add_path('/Alarms/HighChargeCurrent', 0)
+        self.add_path('/Alarms/HighCurrent', 0)
+        self.add_path('/Alarms/HighDischargeCurrent', 0)
+        self.add_path('/Alarms/HighTemperature', 0)
+        self.add_path('/Alarms/HighVoltage', 0)
+        self.add_path('/Alarms/InternalFailure', 0)
+        self.add_path('/Alarms/LowCellVoltage', 0)
+        self.add_path('/Alarms/LowSoc', 0)
+        self.add_path('/Alarms/LowTemperature', 0)
+        self.add_path('/Alarms/LowVoltage', 0)
+        self.add_path('/Alarms/StateOfHealth', 0)
+
+        # MQTT specific members
+        self.mqtt_client = None
+        self.mqtt_config = mqtt_config
+        
+        # Map D-Bus paths to their respective MQTT state topics from config
+        # Helper function to validate a topic string
+        def is_valid_topic(topic):
+            return topic is not None and topic != '' and 'path/to/mqtt' not in topic
+
+        self.dbus_path_to_state_topic_map = {
+            '/Dc/0/Current': self.device_config.get('CurrentStateTopic'),
+            '/Dc/0/Power': self.device_config.get('PowerStateTopic'),
+            '/Dc/0/Temperature': self.device_config.get('TemperatureStateTopic'),
+            '/Dc/0/Voltage': self.device_config.get('VoltageStateTopic'),
+            '/Info/MaxChargeCurrent': self.device_config.get('MaxChargeCurrentStateTopic'),
+            '/Info/MaxChargeVoltage': self.device_config.get('MaxChargeVoltageStateTopic'),
+            '/Info/MaxDischargeCurrent': self.device_config.get('MaxDischargeCurrentStateTopic'),
+            '/Soc': self.device_config.get('SocStateTopic'),
+            '/Soh': self.device_config.get('SohStateTopic'),
+            # Add alarm topics here if they are provided via MQTT
+            # '/Alarms/LowSoc': self.device_config.get('LowSocAlarmTopic'),
+            # ... and so on for other alarms
+        }
+
+        # Filter out invalid topics
+        self.dbus_path_to_state_topic_map = {
+            k: v for k, v in self.dbus_path_to_state_topic_map.items()
+            if is_valid_topic(v)
+        }
+        
+        logger.debug(f"Battery Sensor {self.device_index} - dbus_path_to_state_topic_map: {self.dbus_path_to_state_topic_map}")
+
+        # Initialize and connect the MQTT client
+        self.setup_mqtt_client()
+        
+        self.register()
+        logger.info(f"Service '{service_name}' for device '{self.device_config.get('CustomName')}' registered on D-Bus.")
+
+    def setup_mqtt_client(self, retry_interval=5, max_retries=12):
+        """
+        Initializes and starts the MQTT client with retry logic.
+        """
+        self.mqtt_client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self['/Serial']
+        )
+        
+        if self.mqtt_config.get('Username'):
+            self.mqtt_client.username_pw_set(
+                self.mqtt_config.get('Username'),
+                self.mqtt_config.get('Password')
+            )
+            
+        self.mqtt_client.on_connect = self.on_mqtt_connect
+        self.mqtt_client.on_message = self.on_mqtt_message
+        
+        retries = 0
+        while retries < max_retries:
+            try:
+                logger.debug(f"Attempting to connect to MQTT broker ({retries + 1}/{max_retries})...")
+                self.mqtt_client.connect(
+                    self.mqtt_config.get('BrokerAddress'),
+                    self.mqtt_config.getint('Port', 1883),
+                    60
+                )
+                self.mqtt_client.loop_start()
+                logger.debug("MQTT client started.")
+                return
+            except Exception as e:
+                logger.error(f"Failed to connect to MQTT broker: {e}. Retrying in {retry_interval} seconds...")
+                time.sleep(retry_interval)
+                retries += 1
+        
+        logger.critical(f"Failed to connect to MQTT broker after {max_retries} attempts. Exiting.")
+        sys.exit(1)
+
+    def on_mqtt_connect(self, client, userdata, flags, rc, properties):
+        if rc == 0:
+            logger.debug("Connected to MQTT Broker!")
+            for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+                if topic:
+                    client.subscribe(topic)
+                    logger.debug(f"Subscribed to MQTT state topic: {topic} for D-Bus path {dbus_path}")
+        else:
+            logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+
+    def on_mqtt_message(self, client, userdata, msg):
+        """
+        MQTT callback for when a message is received on a subscribed topic.
+        Handles JSON payloads with a 'value' key, or raw string payloads,
+        specifically for numerical values.
+        """
+        try:
+            payload_str = msg.payload.decode().strip()
+            topic = msg.topic
+            logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
+
+            dbus_path = None
+            for path, t in self.dbus_path_to_state_topic_map.items():
+                if t == topic:
+                    dbus_path = path
+                    break
+            
+            logger.debug(f"Mapping topic '{topic}' to D-Bus path: {dbus_path}")
+
+            if not dbus_path:
+                logger.warning(f"Received MQTT message on unknown topic for Battery: {topic}")
+                return
+
+            value = None
+            try:
+                # Attempt to parse as JSON first
+                json_payload = json.loads(payload_str)
+                if isinstance(json_payload, dict) and "value" in json_payload:
+                    value = json_payload["value"] # Can be float or int for alarms
+                else:
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    return
+            except json.JSONDecodeError:
+                # If not JSON, try to parse as a direct float/int
+                try:
+                    value = float(payload_str)
+                    if dbus_path.startswith('/Alarms'): # If it's an alarm path, convert to int
+                        value = int(value)
+                except ValueError:
+                    logger.warning(f"Invalid numeric payload received for topic '{topic}': '{payload_str}'. Expected a number or a JSON object with a 'value' key.")
+                    return
+            
+            logger.debug(f"Parsed value from MQTT for {topic}: {value} (type: {type(value)})")
+
+            # Use GLib.idle_add to schedule the D-Bus update in the main thread
+            GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
+            
+        except Exception as e:
+            logger.error(f"Error processing MQTT message for Battery: {e}")
+
+    def handle_dbus_change(self, path, value):
+        """
+        Callback function to handle changes to D-Bus paths for battery sensors.
+        """
+        section_name = f'Virtual_Battery_{self.device_index}'
+        
+        if path == '/CustomName':
+            key_name = 'CustomName'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
+            self.save_config_change(section_name, key_name, value)
+            return True
+        elif path == '/Capacity':
+            key_name = 'CapacityAh' # Note: config key is 'CapacityAh'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
+            self.save_config_change(section_name, key_name, value)
+            return True
+        
+        logger.warning(f"Unhandled D-Bus change request for Battery path: {path}")
+        return False
+
+    def save_config_change(self, section, key, value):
+        config = configparser.ConfigParser()
+        try:
+            config.read(CONFIG_FILE_PATH)
+            if not config.has_section(section):
+                logger.warning(f"Creating new section '{section}' in config file.")
+                config.add_section(section)
+            config.set(section, key, str(value))
+            with open(CONFIG_FILE_PATH, 'w') as configfile:
+                config.write(configfile)
+            logger.debug(f"Successfully saved setting '{key}' to section '{section}' in config file.")
+        except Exception as e:
+            logger.error(f"Failed to save config file changes for Battery key '{key}' in section '{section}': {e}")
+            
+    def update_dbus_from_mqtt(self, path, value):
+        """
+        A centralized method to handle MQTT-initiated state changes to D-Bus.
+        """
+        self[path] = value
+        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt (battery update)")
+        
+        return False # Return False for GLib.idle_add to run only once
+
 def run_device_service(device_type, device_index):
     """
     Main function for a single D-Bus service process, now distinguishing by device type.
@@ -1027,6 +1264,29 @@ def run_device_service(device_type, device_index):
         mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
 
         DbusTankSensor(service_name, device_config, serial_number, mqtt_config)
+    
+    # --- BEGIN: VIRTUAL BATTERY INTEGRATION ---
+    elif device_type == 'battery':
+        device_section = f'Virtual_Battery_{device_index}'
+        if not config.has_section(device_section):
+            logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
+            sys.exit(1)
+            
+        device_config = config[device_section]
+        device_config['DeviceIndex'] = str(device_index)
+
+        serial_number = device_config.get('Serial')
+        if not serial_number or serial_number.strip() == '':
+            logger.critical(f"Serial number not found or is empty for virtual battery {device_index} in config. Exiting. Please run the setup script to generate a serial.")
+            sys.exit(1)
+        else:
+            logger.debug(f"Using existing serial number '{serial_number}' for virtual battery {device_index}.")
+        
+        service_name = f'com.victronenergy.battery.virtual_{serial_number}'
+        mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
+
+        DbusBattery(service_name, device_config, serial_number, mqtt_config)
+    # --- END: VIRTUAL BATTERY INTEGRATION ---
         
     else:
         logger.critical(f"Unknown device type: {device_type}")
@@ -1154,6 +1414,34 @@ def main():
             logger.debug(f"Started process for virtual tank sensor {i} (PID: {process.pid})")
         except Exception as e:
             logger.error(f"Failed to start process for tank sensor {i}: {e}")
+
+    # --- BEGIN: VIRTUAL BATTERY LAUNCHER ---
+    try:
+        num_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries')
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        logger.warning("No 'numberofvirtualbatteries' found in [Global] section. Defaulting to 0 virtual batteries.")
+        num_virtual_batteries = 0
+
+    logger.debug(f"Starting {num_virtual_batteries} virtual battery processes...")
+    for i in range(1, num_virtual_batteries + 1):
+        device_section_found = False
+        for section in config.sections():
+            if section.lower() == f'virtual_battery_{i}'.lower():
+                device_section_found = True
+                break
+        
+        if not device_section_found:
+            logger.warning(f"Configuration section for Virtual_Battery_{i} not found. Skipping virtual battery {i}.")
+            continue
+            
+        cmd = [sys.executable, script_path, 'battery', str(i)]
+        try:
+            process = subprocess.Popen(cmd, env=os.environ, close_fds=True)
+            processes.append(process)
+            logger.debug(f"Started process for virtual battery {i} (PID: {process.pid})")
+        except Exception as e:
+            logger.error(f"Failed to start process for virtual battery {i}: {e}")
+    # --- END: VIRTUAL BATTERY LAUNCHER ---
 
     try:
         while True:
