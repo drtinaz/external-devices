@@ -60,7 +60,7 @@ class DbusSwitch(VeDbusService):
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.16')
+        self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
         self.add_path('/Mgmt/Connection', 'Virtual')
         
         # Get values from the device-specific config section
@@ -363,7 +363,7 @@ class DbusTempSensor(VeDbusService):
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.17') # Updated version
+        self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
         self.add_path('/Mgmt/Connection', 'Virtual')
         
         self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
@@ -536,6 +536,299 @@ class DbusTempSensor(VeDbusService):
         
         return False # Return False for GLib.idle_add to run only once
 
+
+class DbusTankSensor(VeDbusService):
+    FLUID_TYPES = {
+        'fuel': 0,
+        'fresh water': 1,
+        'waste water': 2,
+        'live well': 3,
+        'oil': 4,
+        'black water': 5,
+        'gasoline': 6,
+        'diesel': 7,
+        'lpg': 8,
+        'lng': 9,
+        'hydraulic oil': 10,
+        'raw water': 11
+    }
+
+    def __init__(self, service_name, device_config, serial_number, mqtt_config):
+        super().__init__(service_name, register=False)
+
+        self.device_config = device_config
+        self.device_index = device_config.getint('DeviceIndex')
+
+        # General device settings
+        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
+        self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
+        self.add_path('/Mgmt/Connection', 'Virtual')
+        
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
+        self.add_path('/ProductId', 49251) # Product ID for virtual tank sensor
+        self.add_path('/ProductName', 'Virtual tank') # Fixed product name
+        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Serial', serial_number)
+        
+        self.add_path('/Status', 0) # 0 for OK
+        self.add_path('/Connected', 1) # 1 for connected
+
+        # Tank specific paths
+        self.add_path('/BatteryVoltage', 0.0)
+        self.add_path('/Capacity', self.device_config.getfloat('Capacity', 0.2), writeable=True, onchangecallback=self.handle_dbus_change)
+        
+        initial_fluid_type_str = self.device_config.get('FluidType', 'fresh water').lower()
+        initial_fluid_type_int = self.FLUID_TYPES.get(initial_fluid_type_str, self.FLUID_TYPES['fresh water'])
+        self.add_path('/FluidType', initial_fluid_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
+        
+        self.add_path('/Level', 0.0) # Calculated or received via MQTT
+        self.add_path('/RawUnit', self.device_config.get('RawUnit', ''))
+        self.add_path('/RawValue', 0.0) # Received via MQTT or manually set
+        self.add_path('/RawValueEmpty', self.device_config.getfloat('RawValueEmpty', 0.0), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/RawValueFull', self.device_config.getfloat('RawValueFull', 0.0), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Remaining', 0.0) # Calculated
+        self.add_path('/Shape', 0) # Not specified if writable, default to 0
+        self.add_path('/Temperature', 0.0) # Not specified if writable, initial 0.0
+
+        # Alarms
+        self.add_path('/Alarms/High/Active', 0)
+        self.add_path('/Alarms/High/Delay', 0)
+        self.add_path('/Alarms/High/Enable', 0)
+        self.add_path('/Alarms/High/Restore', 0)
+        self.add_path('/Alarms/High/State', 0)
+        self.add_path('/Alarms/Low/Active', 0)
+        self.add_path('/Alarms/Low/Delay', 0)
+        self.add_path('/Alarms/Low/Enable', 0)
+        self.add_path('/Alarms/Low/Restore', 0)
+        self.add_path('/Alarms/Low/State', 0)
+
+
+        # MQTT specific members
+        self.mqtt_client = None
+        self.mqtt_config = mqtt_config
+        self.dbus_path_to_state_topic_map = {
+            '/Level': self.device_config.get('LevelStateTopic'),
+            '/RawValue': self.device_config.get('RawValueStateTopic'),
+            '/Temperature': self.device_config.get('TemperatureStateTopic'),
+            '/BatteryVoltage': self.device_config.get('BatteryStateTopic')
+        }
+
+        # Initialize and connect the MQTT client
+        self.setup_mqtt_client()
+        
+        self.register()
+        logger.info(f"Service '{service_name}' for device '{self.device_config.get('CustomName')}' registered on D-Bus.")
+
+        # Perform initial calculation after paths are registered
+        self._calculate_level_and_remaining()
+
+    def setup_mqtt_client(self, retry_interval=5, max_retries=12):
+        """
+        Initializes and starts the MQTT client with retry logic.
+        """
+        self.mqtt_client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self['/Serial']
+        )
+        
+        if self.mqtt_config.get('Username'):
+            self.mqtt_client.username_pw_set(
+                self.mqtt_config.get('Username'),
+                self.mqtt_config.get('Password')
+            )
+            
+        self.mqtt_client.on_connect = self.on_mqtt_connect
+        self.mqtt_client.on_message = self.on_mqtt_message
+        
+        retries = 0
+        while retries < max_retries:
+            try:
+                logger.debug(f"Attempting to connect to MQTT broker ({retries + 1}/{max_retries})...")
+                self.mqtt_client.connect(
+                    self.mqtt_config.get('BrokerAddress'),
+                    self.mqtt_config.getint('Port', 1883),
+                    60
+                )
+                self.mqtt_client.loop_start()
+                logger.debug("MQTT client started.")
+                return
+            except Exception as e:
+                logger.error(f"Failed to connect to MQTT broker: {e}. Retrying in {retry_interval} seconds...")
+                time.sleep(retry_interval)
+                retries += 1
+        
+        logger.critical(f"Failed to connect to MQTT broker after {max_retries} attempts. Exiting.")
+        sys.exit(1)
+
+    def on_mqtt_connect(self, client, userdata, flags, rc, properties):
+        if rc == 0:
+            logger.debug("Connected to MQTT Broker!")
+            for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+                if topic:
+                    client.subscribe(topic)
+                    logger.debug(f"Subscribed to MQTT state topic: {topic} for D-Bus path {dbus_path}")
+        else:
+            logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+
+    def on_mqtt_message(self, client, userdata, msg):
+        try:
+            payload_str = msg.payload.decode().strip()
+            topic = msg.topic
+            logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
+
+            dbus_path = None
+            for path, t in self.dbus_path_to_state_topic_map.items():
+                if t == topic:
+                    dbus_path = path
+                    break
+
+            if not dbus_path:
+                logger.warning(f"Received MQTT message on unknown topic: {topic}")
+                return
+
+            value = None
+            try:
+                # Attempt to parse as JSON first
+                json_payload = json.loads(payload_str)
+                if isinstance(json_payload, dict) and "value" in json_payload:
+                    value = float(json_payload["value"])
+                else:
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    return
+            except json.JSONDecodeError:
+                # If not JSON, try to parse as a direct float
+                try:
+                    value = float(payload_str)
+                except ValueError:
+                    logger.warning(f"Invalid numeric payload received for topic '{topic}': '{payload_str}'. Expected a number or a JSON object with a 'value' key.")
+                    return
+            
+            # Use GLib.idle_add to schedule the D-Bus update in the main thread
+            # Special handling for RawValue to trigger level calculation
+            if dbus_path == '/RawValue':
+                GLib.idle_add(self._update_raw_value_and_calculate, value)
+            else:
+                GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
+            
+        except Exception as e:
+            logger.error(f"Error processing MQTT message: {e}")
+
+    def _update_raw_value_and_calculate(self, raw_value):
+        """
+        Updates RawValue and then triggers recalculation of Level and Remaining.
+        This is called from GLib.idle_add to ensure thread safety.
+        """
+        self['/RawValue'] = raw_value
+        logger.debug(f"Successfully changed '/RawValue' to {raw_value} from source: mqtt")
+        self._calculate_level_and_remaining()
+        return False # Run once
+
+    def _calculate_level_and_remaining(self):
+        """
+        Calculates Level and Remaining based on RawValue, RawValueEmpty, RawValueFull, and Capacity.
+        Accounts for inverted remaining capacity for waste and black water tanks.
+        """
+        raw_value = self['/RawValue']
+        raw_value_empty = self['/RawValueEmpty']
+        raw_value_full = self['/RawValueFull']
+        capacity = self['/Capacity']
+        fluid_type = self['/FluidType'] # Get the current fluid type
+
+        level = 0.0
+        if raw_value_full != raw_value_empty:
+            level = ((raw_value - raw_value_empty) / (raw_value_full - raw_value_empty)) * 100.0
+            # Clamp level between 0 and 100
+            level = max(0.0, min(100.0, level))
+        elif raw_value == raw_value_empty and raw_value == raw_value_full:
+            # If empty and full are the same, and raw value matches, assume 0% or 100% depending on a sensible default
+            # For tanks, usually this means empty or full state is represented by a specific value
+            # For simplicity, if they are the same, if raw_value is at full
+            if raw_value == raw_value_full and raw_value != 0: # if this condition is met and not zero
+                level = 100.0 # and raw_value is also at full
+            else:
+                level = 0.0
+        else:
+             # This case handles raw_value_full == raw_value_empty but raw_value is different
+             # This suggests invalid sensor setup or a flat sensor curve.
+             logger.warning(f"RawValueFull ({raw_value_full}) is equal to RawValueEmpty ({raw_value_empty}), "
+                            f"but RawValue ({raw_value}) is different. Cannot calculate level reliably.")
+             level = 0.0 # Default to empty in ambiguous cases
+
+        # Calculate remaining capacity, inverting for waste and black water
+        if fluid_type in [self.FLUID_TYPES['waste water'], self.FLUID_TYPES['black water']]:
+            remaining = ((100.0 - level) / 100.0) * capacity
+            logger.debug(f"Inverting remaining capacity for fluid type {fluid_type}: Level {level}% -> Remaining {remaining}")
+        else:
+            remaining = (level / 100.0) * capacity
+
+        # Update D-Bus values, triggering signals
+        if self['/Level'] != round(level, 2): # Round to 2 decimal places for display consistency
+            self['/Level'] = round(level, 2)
+            logger.debug(f"Calculated and updated '/Level' to {self['/Level']}%")
+
+        if self['/Remaining'] != round(remaining, 2): # Round to 2 decimal places
+            self['/Remaining'] = round(remaining, 2)
+            logger.debug(f"Calculated and updated '/Remaining' to {self['/Remaining']}")
+            
+        return False # For GLib.idle_add
+
+    def handle_dbus_change(self, path, value):
+        """
+        Callback function to handle changes to D-Bus paths for tank sensors.
+        """
+        section_name = f'Tank_Sensor_{self.device_index}'
+        
+        if path == '/CustomName':
+            key_name = 'CustomName'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
+            self.save_config_change(section_name, key_name, value)
+            return True
+        elif path == '/FluidType':
+            key_name = 'FluidType'
+            # Convert integer value back to string for saving to config
+            fluid_type_str = next((k for k, v in self.FLUID_TYPES.items() if v == value), None)
+            if fluid_type_str:
+                logger.debug(f"D-Bus settings change triggered for {path} with value '{fluid_type_str}'. Saving to config file.")
+                self.save_config_change(section_name, key_name, fluid_type_str)
+                # Recalculate remaining capacity if fluid type changes
+                GLib.idle_add(self._calculate_level_and_remaining)
+                return True
+            else:
+                logger.warning(f"Invalid FluidType value received: {value}. Not saving to config.")
+                return False
+        elif path in ['/Capacity', '/RawValueEmpty', '/RawValueFull']:
+            key_name = path.replace('/', '') # e.g., 'Capacity', 'RawValueEmpty'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file and recalculating.")
+            self.save_config_change(section_name, key_name, value)
+            GLib.idle_add(self._calculate_level_and_remaining)
+            return True
+
+        logger.warning(f"Unhandled D-Bus change request for path: {path}")
+        return False
+
+    def save_config_change(self, section, key, value):
+        config = configparser.ConfigParser()
+        try:
+            config.read(CONFIG_FILE_PATH)
+            if not config.has_section(section):
+                logger.warning(f"Creating new section '{section}' in config file.")
+                config.add_section(section)
+            config.set(section, key, str(value))
+            with open(CONFIG_FILE_PATH, 'w') as configfile:
+                config.write(configfile)
+            logger.debug(f"Successfully saved setting '{key}' to section '{section}' in config file.")
+        except Exception as e:
+            logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
+            
+    def update_dbus_from_mqtt(self, path, value):
+        """
+        A centralized method to handle MQTT-initiated state changes to D-Bus.
+        """
+        self[path] = value
+        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt")
+        
+        return False # Return False for GLib.idle_add to run only once
+
 def run_device_service(device_type, device_index):
     """
     Main function for a single D-Bus service process, now distinguishing by device type.
@@ -647,6 +940,27 @@ def run_device_service(device_type, device_index):
         mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
 
         DbusTempSensor(service_name, device_config, serial_number, mqtt_config)
+
+    elif device_type == 'tank_sensor':
+        device_section = f'Tank_Sensor_{device_index}'
+        if not config.has_section(device_section):
+            logger.critical(f"Configuration section '{device_section}' not found. Cannot start.")
+            sys.exit(1)
+            
+        device_config = config[device_section]
+        device_config['DeviceIndex'] = str(device_index)
+
+        serial_number = device_config.get('Serial')
+        if not serial_number or serial_number.strip() == '':
+            logger.critical(f"Serial number not found or is empty for tank sensor {device_index} in config. Exiting. Please run the setup script to generate a serial.")
+            sys.exit(1)
+        else:
+            logger.debug(f"Using existing serial number '{serial_number}' for tank sensor {device_index}.")
+        
+        service_name = f'com.victronenergy.tank.virtual_{serial_number}'
+        mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
+
+        DbusTankSensor(service_name, device_config, serial_number, mqtt_config)
         
     else:
         logger.critical(f"Unknown device type: {device_type}")
@@ -747,6 +1061,33 @@ def main():
             logger.debug(f"Started process for virtual temperature sensor {i} (PID: {process.pid})")
         except Exception as e:
             logger.error(f"Failed to start process for temperature sensor {i}: {e}")
+
+    # Handle virtual tank sensor devices
+    try:
+        num_tank_sensors = config.getint('Global', 'numberoftanksensors')
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        logger.warning("No 'numberoftanksensors' found in [Global] section. Defaulting to 0 tank sensors.")
+        num_tank_sensors = 0
+
+    logger.debug(f"Starting {num_tank_sensors} virtual tank sensor processes...")
+    for i in range(1, num_tank_sensors + 1):
+        device_section_found = False
+        for section in config.sections():
+            if section.lower() == f'tank_sensor_{i}'.lower():
+                device_section_found = True
+                break
+        
+        if not device_section_found:
+            logger.warning(f"Configuration section for Tank_Sensor_{i} not found. Skipping tank sensor {i}.")
+            continue
+            
+        cmd = [sys.executable, script_path, 'tank_sensor', str(i)]
+        try:
+            process = subprocess.Popen(cmd, env=os.environ, close_fds=True)
+            processes.append(process)
+            logger.debug(f"Started process for virtual tank sensor {i} (PID: {process.pid})")
+        except Exception as e:
+            logger.error(f"Failed to start process for tank sensor {i}: {e}")
 
     try:
         while True:
