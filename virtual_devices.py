@@ -50,7 +50,6 @@ class DbusSwitch(VeDbusService):
 
         # Store device and output config data for saving changes
         self.device_config = device_config
-        self.output_configs = output_configs
         self.device_index = device_config.getint('DeviceIndex')
 
         # --- BEGIN: NEW MQTT PAYLOADS ---
@@ -110,9 +109,14 @@ class DbusSwitch(VeDbusService):
         command_topic = output_data.get('MqttCommandTopic')
         dbus_state_path = f'{output_prefix}/State'
 
-        if state_topic and command_topic:
+        # Validate topics: ensure they are not None, empty, or placeholder strings
+        if state_topic and state_topic != '' and 'path/to/mqtt' not in state_topic \
+           and command_topic and command_topic != '' and 'path/to/mqtt' not in command_topic:
             self.dbus_path_to_state_topic_map[dbus_state_path] = state_topic
             self.dbus_path_to_command_topic_map[dbus_state_path] = command_topic
+        else:
+            logger.warning(f"MQTT topics for {dbus_state_path} are invalid or not set. State Topic: '{state_topic}', Command Topic: '{command_topic}'. Ignoring.")
+
 
         self.add_path(f'{output_prefix}/Name', output_data['name'])
         self.add_path(f'{output_prefix}/Status', 0)
@@ -191,6 +195,7 @@ class DbusSwitch(VeDbusService):
         """
         MQTT callback for when a message is received on a subscribed topic.
         Handles JSON payloads with a 'value' key, or raw string payloads.
+        Specifically for switch type.
         """
         try:
             payload_str = msg.payload.decode().strip()
@@ -221,6 +226,7 @@ class DbusSwitch(VeDbusService):
             
             # Find the corresponding D-Bus path for this topic
             dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
+            logger.debug(f"Mapping topic '{topic}' to D-Bus path: {dbus_path}")
             
             if dbus_path:
                 # Check if the state is already the same to prevent redundant D-Bus signals.
@@ -394,6 +400,12 @@ class DbusTempSensor(VeDbusService):
             '/BatteryVoltage': self.device_config.get('BatteryStateTopic')
         }
 
+        # Remove None, empty, or 'path/to/mqtt' values from the map
+        self.dbus_path_to_state_topic_map = {
+            k: v for k, v in self.dbus_path_to_state_topic_map.items()
+            if v is not None and v != '' and 'path/to/mqtt' not in v
+        }
+
         # Initialize and connect the MQTT client
         self.setup_mqtt_client()
         
@@ -449,6 +461,11 @@ class DbusTempSensor(VeDbusService):
             logger.error(f"Failed to connect to MQTT broker, return code {rc}")
 
     def on_mqtt_message(self, client, userdata, msg):
+        """
+        MQTT callback for when a message is received on a subscribed topic.
+        Handles JSON payloads with a 'value' key, or raw string payloads,
+        specifically for numerical sensor types (Temperature, Humidity, BatteryVoltage).
+        """
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
@@ -459,9 +476,11 @@ class DbusTempSensor(VeDbusService):
                 if t == topic:
                     dbus_path = path
                     break
+            
+            logger.debug(f"Mapping topic '{topic}' to D-Bus path: {dbus_path}")
 
             if not dbus_path:
-                logger.warning(f"Received MQTT message on unknown topic: {topic}")
+                logger.warning(f"Received MQTT message on unknown topic for TempSensor: {topic}")
                 return
 
             value = None
@@ -481,36 +500,30 @@ class DbusTempSensor(VeDbusService):
                     logger.warning(f"Invalid numeric payload received for topic '{topic}': '{payload_str}'. Expected a number or a JSON object with a 'value' key.")
                     return
             
+            logger.debug(f"Parsed value from MQTT for {topic}: {value} (type: {type(value)})")
+
             # Use GLib.idle_add to schedule the D-Bus update in the main thread
             GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
             
         except Exception as e:
-            logger.error(f"Error processing MQTT message: {e}")
-
+            logger.error(f"Error processing MQTT message for TempSensor: {e}")
+            
     def handle_dbus_change(self, path, value):
-        """
-        Callback function to handle changes to D-Bus paths for temperature sensors.
-        """
-        section_name = f'Temp_Sensor_{self.device_index}'
-        
         if path == '/CustomName':
             key_name = 'CustomName'
+            section_name = f'Temp_Sensor_{self.device_index}'
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             self.save_config_change(section_name, key_name, value)
             return True
         elif path == '/TemperatureType':
+            # Convert integer back to string for saving
+            type_str = next((k for k, v in self.TEMPERATURE_TYPES.items() if v == value), 'generic')
             key_name = 'Type'
-            # Convert integer value back to string for saving to config
-            type_str = next((k for k, v in self.TEMPERATURE_TYPES.items() if v == value), None)
-            if type_str:
-                logger.debug(f"D-Bus settings change triggered for {path} with value '{type_str}'. Saving to config file.")
-                self.save_config_change(section_name, key_name, type_str)
-                return True
-            else:
-                logger.warning(f"Invalid TemperatureType value received: {value}. Not saving to config.")
-                return False
-        
-        logger.warning(f"Unhandled D-Bus change request for path: {path}")
+            section_name = f'Temp_Sensor_{self.device_index}'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}' ({type_str}). Saving to config file.")
+            self.save_config_change(section_name, key_name, type_str)
+            return True
+        logger.warning(f"Unhandled D-Bus change request for TempSensor path: {path}")
         return False
 
     def save_config_change(self, section, key, value):
@@ -525,17 +538,12 @@ class DbusTempSensor(VeDbusService):
                 config.write(configfile)
             logger.debug(f"Successfully saved setting '{key}' to section '{section}' in config file.")
         except Exception as e:
-            logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
-            
-    def update_dbus_from_mqtt(self, path, value):
-        """
-        A centralized method to handle MQTT-initiated state changes to D-Bus.
-        """
-        self[path] = value
-        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt")
-        
-        return False # Return False for GLib.idle_add to run only once
+            logger.error(f"Failed to save config file changes for TempSensor key '{key}' in section '{section}': {e}")
 
+    def update_dbus_from_mqtt(self, path, value):
+        self[path] = value
+        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt (TempSensor)")
+        return False # Run once
 
 class DbusTankSensor(VeDbusService):
     FLUID_TYPES = {
@@ -606,12 +614,37 @@ class DbusTankSensor(VeDbusService):
         # MQTT specific members
         self.mqtt_client = None
         self.mqtt_config = mqtt_config
-        self.dbus_path_to_state_topic_map = {
-            '/Level': self.device_config.get('LevelStateTopic'),
-            '/RawValue': self.device_config.get('RawValueStateTopic'),
-            '/Temperature': self.device_config.get('TemperatureStateTopic'),
-            '/BatteryVoltage': self.device_config.get('BatteryStateTopic')
-        }
+        self.dbus_path_to_state_topic_map = {}
+        self.is_level_direct = False # Flag to indicate if Level is directly provided or calculated from RawValue
+
+        # Helper function to validate a topic string
+        def is_valid_topic(topic):
+            return topic is not None and topic != '' and 'path/to/mqtt' not in topic
+
+        # Determine if Level is directly provided or calculated from RawValue
+        level_state_topic = self.device_config.get('LevelStateTopic')
+        raw_value_state_topic = self.device_config.get('RawValueStateTopic')
+
+        self.is_level_direct = False # Default to RawValue calculation or no level updates
+
+        if is_valid_topic(raw_value_state_topic):
+            self.dbus_path_to_state_topic_map['/RawValue'] = raw_value_state_topic
+            logger.debug(f"Tank Sensor {self.device_index} configured for RawValue updates via MQTT to calculate Level.")
+        elif is_valid_topic(level_state_topic):
+            self.is_level_direct = True
+            self.dbus_path_to_state_topic_map['/Level'] = level_state_topic
+            logger.debug(f"Tank Sensor {self.device_index} configured for direct Level updates via MQTT.")
+        else:
+            logger.warning(f"Tank Sensor {self.device_index} has neither LevelStateTopic nor RawValueStateTopic configured. Level and Remaining will not update via MQTT.")
+
+        # Always add temperature and battery voltage if their topics exist, regardless of level source
+        if is_valid_topic(self.device_config.get('TemperatureStateTopic')):
+            self.dbus_path_to_state_topic_map['/Temperature'] = self.device_config.get('TemperatureStateTopic')
+        if is_valid_topic(self.device_config.get('BatteryStateTopic')):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
+
+        logger.debug(f"Tank Sensor {self.device_index} - is_level_direct: {self.is_level_direct}")
+        logger.debug(f"Tank Sensor {self.device_index} - dbus_path_to_state_topic_map: {self.dbus_path_to_state_topic_map}")
 
         # Initialize and connect the MQTT client
         self.setup_mqtt_client()
@@ -620,7 +653,11 @@ class DbusTankSensor(VeDbusService):
         logger.info(f"Service '{service_name}' for device '{self.device_config.get('CustomName')}' registered on D-Bus.")
 
         # Perform initial calculation after paths are registered
-        self._calculate_level_and_remaining()
+        if not self.is_level_direct: # Only calculate level from raw value if raw value is the primary input
+            self._calculate_level_from_raw_value()
+        # Always calculate remaining based on the current level, whether it was set directly or calculated
+        self._calculate_remaining_from_level()
+
 
     def setup_mqtt_client(self, retry_interval=5, max_retries=12):
         """
@@ -683,7 +720,7 @@ class DbusTankSensor(VeDbusService):
                     break
 
             if not dbus_path:
-                logger.warning(f"Received MQTT message on unknown topic: {topic}")
+                logger.warning(f"Received MQTT message on unknown topic for TankSensor: {topic}")
                 return
 
             value = None
@@ -703,71 +740,99 @@ class DbusTankSensor(VeDbusService):
                     logger.warning(f"Invalid numeric payload received for topic '{topic}': '{payload_str}'. Expected a number or a JSON object with a 'value' key.")
                     return
             
+            logger.debug(f"Parsed value from MQTT for {topic}: {value} (type: {type(value)})")
+
             # Use GLib.idle_add to schedule the D-Bus update in the main thread
-            # Special handling for RawValue to trigger level calculation
-            if dbus_path == '/RawValue':
-                GLib.idle_add(self._update_raw_value_and_calculate, value)
+            if dbus_path == '/RawValue' and not self.is_level_direct:
+                logger.debug(f"Calling _update_raw_value_and_trigger_calculation for value: {value}")
+                GLib.idle_add(self._update_raw_value_and_trigger_calculation, value)
+            elif dbus_path == '/Level' and self.is_level_direct:
+                logger.debug(f"Calling _update_level_and_calculate_remaining for value: {value}")
+                GLib.idle_add(self._update_level_and_calculate_remaining, value)
             else:
+                # This covers /Temperature and /BatteryVoltage, or if a topic is mismatched with is_level_direct
+                logger.debug(f"Calling update_dbus_from_mqtt (generic) for {dbus_path} with value: {value}")
                 GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
             
         except Exception as e:
-            logger.error(f"Error processing MQTT message: {e}")
+            logger.error(f"Error processing MQTT message for TankSensor: {e}")
 
-    def _update_raw_value_and_calculate(self, raw_value):
+    def _update_level_and_calculate_remaining(self, level_value):
+        """
+        Updates Level directly and then calculates Remaining.
+        This is called from GLib.idle_add to ensure thread safety.
+        """
+        if 0.0 <= level_value <= 100.0:
+            self['/Level'] = round(level_value, 2)
+            logger.debug(f"Successfully changed '/Level' to {self['/Level']} from source: mqtt (direct level update)")
+            self._calculate_remaining_from_level()
+        else:
+            logger.warning(f"Received invalid level value: {level_value}. Level must be between 0 and 100.")
+        return False # Run once
+
+    def _update_raw_value_and_trigger_calculation(self, raw_value):
         """
         Updates RawValue and then triggers recalculation of Level and Remaining.
         This is called from GLib.idle_add to ensure thread safety.
         """
         self['/RawValue'] = raw_value
         logger.debug(f"Successfully changed '/RawValue' to {raw_value} from source: mqtt")
-        self._calculate_level_and_remaining()
+        self._calculate_level_from_raw_value_and_then_remaining()
         return False # Run once
 
-    def _calculate_level_and_remaining(self):
+    def _calculate_level_from_raw_value_and_then_remaining(self):
         """
-        Calculates Level and Remaining based on RawValue, RawValueEmpty, RawValueFull, and Capacity.
+        Helper to calculate Level from RawValue and then Remaining from the new Level.
+        """
+        self._calculate_level_from_raw_value()
+        self._calculate_remaining_from_level()
+        return False # Run once
+
+    def _calculate_level_from_raw_value(self):
+        """
+        Calculates Level based on RawValue, RawValueEmpty, and RawValueFull.
         """
         raw_value = self['/RawValue']
-        raw_value_empty = self['/RawValueEmpty']
-        raw_value_full = self['/RawValueFull']
-        capacity = self['/Capacity']
+        raw_empty = self['/RawValueEmpty']
+        raw_full = self['/RawValueFull']
 
         level = 0.0
-        if raw_value_full != raw_value_empty:
-            level = ((raw_value - raw_value_empty) / (raw_value_full - raw_value_empty)) * 100.0
+        if raw_full != raw_empty:
+            level = ((raw_value - raw_empty) / (raw_full - raw_empty)) * 100.0
             # Clamp level between 0 and 100
             level = max(0.0, min(100.0, level))
-        elif raw_value == raw_value_empty and raw_value == raw_value_full:
-            # If empty and full are the same, and raw value matches, assume 0% or 100% depending on a sensible default
-            # For tanks, usually this means empty or full state is represented by a specific value
-            # For simplicity, if they are the same, if raw_value is at full
-            if raw_value == raw_value_full and raw_value != 0: # if this condition is met and not zero
-                level = 100.0 # and raw_value is also at full
-            else:
-                level = 0.0
+        elif raw_value == raw_full and raw_value != 0: # Check if it's the specific non-zero 'full' value
+            level = 100.0
+        elif raw_value == raw_empty and raw_value == 0: # Check if it's the specific zero 'empty' value
+            level = 0.0
         else:
-             # This case handles raw_value_full == raw_value_empty but raw_value is different
-             # This suggests invalid sensor setup or a flat sensor curve.
-             logger.warning(f"RawValueFull ({raw_value_full}) is equal to RawValueEmpty ({raw_value_empty}), "
-                            f"but RawValue ({raw_value}) is different. Cannot calculate level reliably.")
+             logger.warning(f"RawValueFull ({raw_full}) is equal to RawValueEmpty ({raw_empty}), "
+                            f"but RawValue ({raw_value}) is different or ambiguous. Cannot calculate level reliably, defaulting to 0.")
              level = 0.0 # Default to empty in ambiguous cases
 
-        remaining = (level / 100.0) * capacity
-
-        # Update D-Bus values, triggering signals
-        if self['/Level'] != round(level, 2): # Round to 2 decimal places for display consistency
+        if self['/Level'] != round(level, 2):
             self['/Level'] = round(level, 2)
-            logger.debug(f"Calculated and updated '/Level' to {self['/Level']}%")
+            logger.debug(f"Calculated and updated '/Level' to {self['/Level']}% from RawValue: {raw_value}")
+        return False # For GLib.idle_add
 
+    def _calculate_remaining_from_level(self):
+        """
+        Calculates Remaining from Level and Capacity.
+        """
+        level = self['/Level']
+        capacity = self['/Capacity']
+        
+        remaining = (level / 100.0) * capacity
+        
         if self['/Remaining'] != round(remaining, 2): # Round to 2 decimal places
             self['/Remaining'] = round(remaining, 2)
-            logger.debug(f"Calculated and updated '/Remaining' to {self['/Remaining']}")
-            
+            logger.debug(f"Calculated and updated '/Remaining' to {self['/Remaining']} from Level: {level}% and Capacity: {capacity}")
         return False # For GLib.idle_add
 
     def handle_dbus_change(self, path, value):
         """
         Callback function to handle changes to D-Bus paths for tank sensors.
+        This is triggered when a D-Bus client requests a change or an internal calculation occurs.
         """
         section_name = f'Tank_Sensor_{self.device_index}'
         
@@ -778,20 +843,30 @@ class DbusTankSensor(VeDbusService):
             return True
         elif path == '/FluidType':
             key_name = 'FluidType'
-            # Convert integer value back to string for saving to config
+            # Convert integer value back to string for saving
             fluid_type_str = next((k for k, v in self.FLUID_TYPES.items() if v == value), None)
             if fluid_type_str:
-                logger.debug(f"D-Bus settings change triggered for {path} with value '{fluid_type_str}'. Saving to config file.")
+                logger.debug(f"D-Bus settings change triggered for {path} with value '{fluid_type_str}'. Saving to config file and recalculating remaining.")
                 self.save_config_change(section_name, key_name, fluid_type_str)
+                GLib.idle_add(self._calculate_remaining_from_level)
                 return True
             else:
                 logger.warning(f"Invalid FluidType value received: {value}. Not saving to config.")
                 return False
-        elif path in ['/Capacity', '/RawValueEmpty', '/RawValueFull']:
-            key_name = path.replace('/', '') # e.g., 'Capacity', 'RawValueEmpty'
-            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file and recalculating.")
+        elif path == '/Capacity':
+            key_name = 'Capacity'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file and recalculating remaining.")
             self.save_config_change(section_name, key_name, value)
-            GLib.idle_add(self._calculate_level_and_remaining)
+            GLib.idle_add(self._calculate_remaining_from_level)
+            return True
+        elif path in ['/RawValueEmpty', '/RawValueFull']:
+            key_name = path.replace('/', '') # e.g., 'RawValueEmpty', 'RawValueFull'
+            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
+            self.save_config_change(section_name, key_name, value)
+            # Only trigger recalculation if RawValue is the primary input
+            if not self.is_level_direct:
+                logger.debug(f"Triggering _calculate_level_from_raw_value_and_then_remaining due to {path} change.")
+                GLib.idle_add(self._calculate_level_from_raw_value_and_then_remaining)
             return True
 
         logger.warning(f"Unhandled D-Bus change request for path: {path}")
@@ -816,7 +891,7 @@ class DbusTankSensor(VeDbusService):
         A centralized method to handle MQTT-initiated state changes to D-Bus.
         """
         self[path] = value
-        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt")
+        logger.debug(f"Successfully changed '{path}' to {value} from source: mqtt (generic update)")
         
         return False # Return False for GLib.idle_add to run only once
 
