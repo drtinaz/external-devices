@@ -4,5 +4,8 @@ v0.2
   fix path in service/run
 v0.3
   fix file permissions
-
+v0.4
   enhance json handling for mqtt state topics
+  fix error in temp sensor creation
+  enhance device instance handling and assignment
+  allow number of relay modules to be 0
