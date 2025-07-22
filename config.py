@@ -321,6 +321,11 @@ def create_or_edit_config():
         config.set(temp_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
 
     # Tank Sensor settings (NEW SECTION)
+    fluid_types_map = {
+        'fuel': 0, 'fresh water': 1, 'waste water': 2, 'live well': 3,
+        'oil': 4, 'black water': 5, 'gasoline': 6, 'diesel': 7,
+        'lpg': 8, 'lng': 9, 'hydraulic oil': 10, 'raw water': 11
+    }
     for i in range(1, num_tank_sensors + 1):
         tank_sensor_section = f'Tank_Sensor_{i}'
         if not config.has_section(tank_sensor_section):
@@ -361,6 +366,40 @@ def create_or_edit_config():
         current_temp_state_topic = config.get(tank_sensor_section, 'temperaturestatetopic', fallback='path/to/mqtt/temperature')
         temp_state_topic = input(f"Enter MQTT temperature state topic for Tank Sensor {i} (current: {current_temp_state_topic}): ")
         config.set(tank_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
+
+        # Raw Value State Topic (NEW)
+        current_raw_value_state_topic = config.get(tank_sensor_section, 'rawvaluestatetopic', fallback='path/to/mqtt/rawvalue')
+        raw_value_state_topic = input(f"Enter MQTT raw value state topic for Tank Sensor {i} (current: {current_raw_value_state_topic}): ")
+        config.set(tank_sensor_section, 'rawvaluestatetopic', raw_value_state_topic if raw_value_state_topic else current_raw_value_state_topic)
+
+        # Fluid Type (NEW)
+        # Construct the display string for fluid types without numbers
+        fluid_types_display = ", ".join([f"'{name}'" for name in fluid_types_map.keys()])
+        current_fluid_type_name = config.get(tank_sensor_section, 'fluidtype', fallback='fresh water') # Now stores the name
+        while True:
+            fluid_type_input = input(f"Enter fluid type for Tank Sensor {i} (options: {fluid_types_display}; current: '{current_fluid_type_name}'): ")
+            if fluid_type_input:
+                if fluid_type_input.lower() in fluid_types_map:
+                    config.set(tank_sensor_section, 'fluidtype', fluid_type_input.lower()) # Store the name
+                    break
+                else:
+                    print("Invalid fluid type. Please choose from the available options.")
+            else:
+                config.set(tank_sensor_section, 'fluidtype', current_fluid_type_name) # Keep existing name
+                break
+
+        # Raw Value Empty (NEW - set to default without prompt)
+        current_raw_value_empty = config.get(tank_sensor_section, 'rawvalueempty', fallback='0')
+        config.set(tank_sensor_section, 'rawvalueempty', current_raw_value_empty) # Set to current or default
+
+        # Raw Value Full (NEW - set to default without prompt)
+        current_raw_value_full = config.get(tank_sensor_section, 'rawvaluefull', fallback='50')
+        config.set(tank_sensor_section, 'rawvaluefull', current_raw_value_full) # Set to current or default
+
+        # Capacity (NEW - set to default without prompt)
+        current_capacity = config.get(tank_sensor_section, 'capacity', fallback='0.2')
+        config.set(tank_sensor_section, 'capacity', current_capacity) # Set to current or default
+
 
     # Virtual Battery settings (NEW SECTION)
     for i in range(1, num_virtual_batteries + 1):
