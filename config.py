@@ -151,6 +151,8 @@ def create_or_edit_config():
             print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
     config.set('Global', 'numberofvirtualbatteries', str(num_virtual_batteries))
 
+    # Removed the 4 generic payload values from here
+
 
     # Device instance counter to ensure they start at 100 and increment
     device_instance_counter = 100
@@ -199,14 +201,26 @@ def create_or_edit_config():
                 print("Invalid input. Please enter a positive integer for the number of switches.")
         config.set(relay_module_section, 'numberofswitches', str(num_switches))
 
-        # MQTT ON/OFF payload
-        current_mqtt_on = config.get(relay_module_section, 'mqttonpayload', fallback='ON')
-        mqtt_on = input(f"Enter MQTT ON payload for Relay Module {i} (current: {current_mqtt_on}): ")
-        config.set(relay_module_section, 'mqttonpayload', mqtt_on if mqtt_on else current_mqtt_on)
+        # MQTT ON State Payload (moved back to relay module level)
+        current_mqtt_on_state_payload = config.get(relay_module_section, 'mqtt_on_state_payload', fallback='ON')
+        mqtt_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i} (current: {current_mqtt_on_state_payload}): ")
+        config.set(relay_module_section, 'mqtt_on_state_payload', mqtt_on_state_payload if mqtt_on_state_payload else current_mqtt_on_state_payload)
 
-        current_mqtt_off = config.get(relay_module_section, 'mqttoffpayload', fallback='OFF')
-        mqtt_off = input(f"Enter MQTT OFF payload for Relay Module {i} (current: {current_mqtt_off}): ")
-        config.set(relay_module_section, 'mqttoffpayload', mqtt_off if mqtt_off else current_mqtt_off)
+        # MQTT OFF State Payload (moved back to relay module level)
+        current_mqtt_off_state_payload = config.get(relay_module_section, 'mqtt_off_state_payload', fallback='OFF')
+        mqtt_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i} (current: {current_mqtt_off_state_payload}): ")
+        config.set(relay_module_section, 'mqtt_off_state_payload', mqtt_off_state_payload if mqtt_off_state_payload else current_mqtt_off_state_payload)
+
+        # MQTT ON Command Payload (NEW, at relay module level)
+        current_mqtt_on_command_payload = config.get(relay_module_section, 'mqtt_on_command_payload', fallback='ON')
+        mqtt_on_command_payload = input(f"Enter MQTT ON command payload for Relay Module {i} (current: {current_mqtt_on_command_payload}): ")
+        config.set(relay_module_section, 'mqtt_on_command_payload', mqtt_on_command_payload if mqtt_on_command_payload else current_mqtt_on_command_payload)
+
+        # MQTT OFF Command Payload (NEW, at relay module level)
+        current_mqtt_off_command_payload = config.get(relay_module_section, 'mqtt_off_command_payload', fallback='OFF')
+        mqtt_off_command_payload = input(f"Enter MQTT OFF command payload for Relay Module {i} (current: {current_mqtt_off_command_payload}): ")
+        config.set(relay_module_section, 'mqtt_off_command_payload', mqtt_off_command_payload if mqtt_off_command_payload else current_mqtt_off_command_payload)
+
 
         # Relay Module index - No longer prompting, just setting it based on loop variable 'i'
         config.set(relay_module_section, 'deviceindex', str(i))
@@ -247,6 +261,7 @@ def create_or_edit_config():
             current_mqtt_command_topic = config.get(switch_section, 'mqttcommandtopic', fallback='path/to/mqtt/topic')
             mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
             config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
+
 
     # Temperature Sensor settings (NEW SECTION)
     for i in range(1, num_temp_sensors + 1):
