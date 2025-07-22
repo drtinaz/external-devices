@@ -4,3 +4,5 @@ v0.2
   fix path in service/run
 v0.3
   fix file permissions
+
+  enhance json handling for mqtt state topics
