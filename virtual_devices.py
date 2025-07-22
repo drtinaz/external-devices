@@ -45,17 +45,21 @@ except ImportError:
 
 class DbusSwitch(VeDbusService):
 
-    def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload):
+    # MODIFIED: Changed __init__ signature to accept four distinct payload types
+    def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_config,
+                 mqtt_on_state_payload, mqtt_off_state_payload, mqtt_on_command_payload, mqtt_off_command_payload):
         super().__init__(service_name, register=False)
 
         # Store device and output config data for saving changes
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
 
-        # --- BEGIN: NEW MQTT PAYLOADS ---
-        self.mqtt_on_payload = mqtt_on_payload
-        self.mqtt_off_payload = mqtt_off_payload
-        # --- END: NEW MQTT PAYLOADS ---
+        # --- BEGIN: NEW MQTT PAYLOADS (MODIFIED) ---
+        self.mqtt_on_state_payload = mqtt_on_state_payload
+        self.mqtt_off_state_payload = mqtt_off_state_payload
+        self.mqtt_on_command_payload = mqtt_on_command_payload
+        self.mqtt_off_command_payload = mqtt_off_command_payload
+        # --- END: NEW MQTT PAYLOADS (MODIFIED) ---
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
@@ -216,12 +220,14 @@ class DbusSwitch(VeDbusService):
                 processed_payload = payload_str.lower()
             
             new_state = None
-            if processed_payload == self.mqtt_on_payload.lower():
+            # MODIFIED: Use new state payloads for incoming messages
+            if processed_payload == self.mqtt_on_state_payload.lower():
                 new_state = 1
-            elif processed_payload == self.mqtt_off_payload.lower():
+            elif processed_payload == self.mqtt_off_state_payload.lower():
                 new_state = 0
             else:
-                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{processed_payload}'. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
+                # MODIFIED: Updated log message to reflect the new payload variables
+                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{processed_payload}'. Expected '{self.mqtt_on_state_payload}' or '{self.mqtt_off_state_payload}'.")
                 return
             
             # Find the corresponding D-Bus path for this topic
@@ -327,9 +333,10 @@ class DbusSwitch(VeDbusService):
         try:
             command_topic = self.dbus_path_to_command_topic_map[path]
 
-            # --- BEGIN: UPDATED PAYLOAD LOGIC ---
-            mqtt_payload = self.mqtt_on_payload if value == 1 else self.mqtt_off_payload
-            # --- END: UPDATED PAYLOAD LOGIC ---
+            # --- BEGIN: UPDATED PAYLOAD LOGIC (MODIFIED) ---
+            # Use command payloads for outgoing messages
+            mqtt_payload = self.mqtt_on_command_payload if value == 1 else self.mqtt_off_command_payload
+            # --- END: UPDATED PAYLOAD LOGIC (MODIFIED) ---
 
             # Note: Commands are typically not retained
             (rc, mid) = self.mqtt_client.publish(command_topic, mqtt_payload, retain=False)
@@ -1177,8 +1184,11 @@ def run_device_service(device_type, device_index):
             
         device_config = config[device_section]
         
-        mqtt_on_payload = device_config.get('MqttOnPayload', 'ON')
-        mqtt_off_payload = device_config.get('MqttOffPayload', 'OFF')
+        # MODIFIED: Retrieve all four distinct payload values from config
+        mqtt_on_state_payload = device_config.get('MqttOnStatePayload', 'ON')
+        mqtt_off_state_payload = device_config.get('MqttOffStatePayload', 'OFF')
+        mqtt_on_command_payload = device_config.get('MqttOnCommandPayload', '1') # Default to '1' for command
+        mqtt_off_command_payload = device_config.get('MqttOffCommandPayload', '0') # Default to '0' for command
 
         device_config['DeviceIndex'] = str(device_index)
         
@@ -1221,7 +1231,9 @@ def run_device_service(device_type, device_index):
 
         mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
 
-        DbusSwitch(service_name, device_config, output_configs, serial_number, mqtt_config, mqtt_on_payload, mqtt_off_payload)
+        # MODIFIED: Pass all four payload values to the DbusSwitch constructor
+        DbusSwitch(service_name, device_config, output_configs, serial_number, mqtt_config,
+                   mqtt_on_state_payload, mqtt_off_state_payload, mqtt_on_command_payload, mqtt_off_command_payload)
     
     elif device_type == 'temp_sensor':
         device_section = f'Temp_Sensor_{device_index}'
