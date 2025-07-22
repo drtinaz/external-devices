@@ -1,7 +1,4 @@
-*****************************************************************************************
-******** CURRENTLY UNDER DEVELOPEMENT - NOT FUNCTIONAL ********************
-****************************************************************************************
-
+For victron venus os devices running firmware version 3.60 or later.
 This installs a service that will create virtual devices for venus os that can be displayed on gui v2. (Relay modules, virtual batteries, temperature sensors, and tank sensors) This has been tested on Cerbo GX but most likely can also be used on Ekrano or raspi. Node red is not required, allowing this service to be installed on regular os versions. MQTT is the protocol used for status and control.
 
 ************ INSTALL USING KEVINS SETUP HELPER **************
