@@ -9,3 +9,5 @@ v0.4
   fix error in temp sensor creation
   enhance device instance handling and assignment
   allow number of relay modules to be 0
+v0.5
+  add back some settings in config.py that accidently got removed for tank sensor.
