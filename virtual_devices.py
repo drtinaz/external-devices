@@ -20,6 +20,7 @@ for handler in logger.handlers[:]:
 # Now configure the logging for the script
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+# Reverting console handler changes
 # Create a StreamHandler to write logs to the console (stderr by default)
 console_handler = logging.StreamHandler(sys.stdout) # You can use sys.stderr as well
 console_handler.setFormatter(formatter)
@@ -43,6 +44,20 @@ except ImportError:
     logger.critical("Cannot find vedbus library. Please ensure it's in the correct path.")
     sys.exit(1)
 
+def get_json_attribute(data, path):
+    """
+    Recursively gets an attribute from a nested dictionary using a dot-separated path.
+    Returns None if the path does not exist.
+    """
+    parts = path.split('.')
+    current = data
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
 class DbusSwitch(VeDbusService):
 
     # MODIFIED: Changed __init__ signature to accept four distinct payload types
@@ -55,10 +70,33 @@ class DbusSwitch(VeDbusService):
         self.device_index = device_config.getint('DeviceIndex')
 
         # --- BEGIN: NEW MQTT PAYLOADS (MODIFIED) ---
-        self.mqtt_on_state_payload = mqtt_on_state_payload
-        self.mqtt_off_state_payload = mqtt_off_state_payload
+        self.mqtt_on_state_payload_raw = mqtt_on_state_payload # Store raw for comparison
+        self.mqtt_off_state_payload_raw = mqtt_off_state_payload # Store raw for comparison
         self.mqtt_on_command_payload = mqtt_on_command_payload
         self.mqtt_off_command_payload = mqtt_off_command_payload
+        
+        self.mqtt_on_state_payload_json = None
+        self.mqtt_off_state_payload_json = None
+
+        logger.debug(f"DEBUG: Raw mqtt_on_state_payload from config: '{mqtt_on_state_payload}' (type: {type(mqtt_on_state_payload)})")
+        logger.debug(f"DEBUG: Parsed mqtt_on_state_payload_json before if: {self.mqtt_on_state_payload_json}")
+
+        # Attempt to parse ON and OFF state payloads as JSON
+        try:
+            parsed_on = json.loads(mqtt_on_state_payload)
+            if isinstance(parsed_on, dict) and len(parsed_on) == 1:
+                self.mqtt_on_state_payload_json = parsed_on
+                logger.debug(f"Parsed MqttOnStatePayload as JSON: {self.mqtt_on_state_payload_json}")
+        except json.JSONDecodeError:
+            pass # Not a JSON, keep as string comparison
+
+        try:
+            parsed_off = json.loads(mqtt_off_state_payload)
+            if isinstance(parsed_off, dict) and len(parsed_off) == 1:
+                self.mqtt_off_state_payload_json = parsed_off
+                logger.debug(f"Parsed MqttOffStatePayload as JSON: {self.mqtt_off_state_payload_json}")
+        except json.JSONDecodeError:
+            pass # Not a JSON, keep as string comparison
         # --- END: NEW MQTT PAYLOADS (MODIFIED) ---
 
         # General device settings
@@ -200,35 +238,61 @@ class DbusSwitch(VeDbusService):
         MQTT callback for when a message is received on a subscribed topic.
         Handles JSON payloads with a 'value' key, or raw string payloads.
         Specifically for switch type.
+        MODIFIED: Handles complex JSON payloads based on mqtt_on/off_state_payloads.
         """
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
 
-            processed_payload = None
+            new_state = None
+            processed_payload_value = None # This will hold the extracted value from JSON or the raw string
+
             try:
-                # Attempt to parse as JSON first
-                json_payload = json.loads(payload_str)
-                if isinstance(json_payload, dict) and "value" in json_payload:
-                    processed_payload = str(json_payload["value"]).lower()
-                else:
-                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}. Falling back to raw payload.")
-                    processed_payload = payload_str.lower()
+                # Attempt to parse incoming payload as JSON first
+                incoming_json = json.loads(payload_str)
+                logger.debug(f"Incoming MQTT payload is JSON: {incoming_json}")
+
+                if self.mqtt_on_state_payload_json:
+                    # If ON payload is JSON, extract attribute and value
+                    on_attr, on_val = list(self.mqtt_on_state_payload_json.items())[0]
+                    extracted_on_value = get_json_attribute(incoming_json, on_attr)
+                    logger.debug(f"Comparing JSON: looking for '{on_attr}' with value '{on_val}'. Found '{extracted_on_value}'.")
+                    if extracted_on_value is not None and str(extracted_on_value).lower() == str(on_val).lower():
+                        new_state = 1
+                        processed_payload_value = extracted_on_value
+                
+                if new_state is None and self.mqtt_off_state_payload_json:
+                    # If OFF payload is JSON, extract attribute and value
+                    off_attr, off_val = list(self.mqtt_off_state_payload_json.items())[0]
+                    extracted_off_value = get_json_attribute(incoming_json, off_attr)
+                    logger.debug(f"Comparing JSON: looking for '{off_attr}' with value '{off_val}'. Found '{extracted_off_value}'.")
+                    if extracted_off_value is not None and str(extracted_off_value).lower() == str(off_val).lower():
+                        new_state = 0
+                        processed_payload_value = extracted_off_value
+
+                if new_state is None: # If JSON matching didn't yield a state, fall back to "value" key or raw
+                    if isinstance(incoming_json, dict) and "value" in incoming_json:
+                        processed_payload_value = str(incoming_json["value"]).lower()
+                    else:
+                        logger.warning(f"JSON payload for topic '{topic}' did not match configured JSON payloads or 'value' key: {payload_str}. Falling back to raw payload string comparison.")
+                        processed_payload_value = payload_str.lower()
+
             except json.JSONDecodeError:
                 # If not JSON, treat the original payload as a raw string
-                processed_payload = payload_str.lower()
+                logger.debug(f"Incoming MQTT payload is not JSON. Falling back to raw string comparison: {payload_str}")
+                processed_payload_value = payload_str.lower()
             
-            new_state = None
-            # MODIFIED: Use new state payloads for incoming messages
-            if processed_payload == self.mqtt_on_state_payload.lower():
-                new_state = 1
-            elif processed_payload == self.mqtt_off_state_payload.lower():
-                new_state = 0
-            else:
-                # MODIFIED: Updated log message to reflect the new payload variables
-                logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{processed_payload}'. Expected '{self.mqtt_on_state_payload}' or '{self.mqtt_off_state_payload}'.")
-                return
+            # Now, determine new_state based on processed_payload_value (either from JSON or raw string)
+            if new_state is None: # Only if JSON parsing/matching didn't set it
+                if processed_payload_value == self.mqtt_on_state_payload_raw.lower():
+                    new_state = 1
+                elif processed_payload_value == self.mqtt_off_state_payload_raw.lower():
+                    new_state = 0
+                else:
+                    # MODIFIED: Updated log message to reflect the new payload variables
+                    logger.warning(f"Invalid MQTT payload received for topic '{topic}': '{payload_str}'. Expected '{self.mqtt_on_state_payload_raw}' or '{self.mqtt_off_state_payload_raw}' or a matching JSON structure.")
+                    return
             
             # Find the corresponding D-Bus path for this topic
             dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
@@ -379,7 +443,7 @@ class DbusTempSensor(VeDbusService):
         self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
         self.add_path('/Mgmt/Connection', 'Virtual')
         
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstanceInstance'))
         self.add_path('/ProductId', 49248) # Product ID for virtual temperature sensor
         self.add_path('/ProductName', 'Virtual temperature') # Fixed product name
         self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
@@ -470,22 +534,15 @@ class DbusTempSensor(VeDbusService):
     def on_mqtt_message(self, client, userdata, msg):
         """
         MQTT callback for when a message is received on a subscribed topic.
-        Handles JSON payloads with a 'value' key, or raw string payloads,
-        specifically for numerical sensor types (Temperature, Humidity, BatteryVoltage).
+        Handles JSON payloads with a 'value' key, or raw string payloads.
         """
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
 
-            dbus_path = None
-            for path, t in self.dbus_path_to_state_topic_map.items():
-                if t == topic:
-                    dbus_path = path
-                    break
+            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
             
-            logger.debug(f"Mapping topic '{topic}' to D-Bus path: {dbus_path}")
-
             if not dbus_path:
                 logger.warning(f"Received MQTT message on unknown topic for TempSensor: {topic}")
                 return
@@ -493,11 +550,11 @@ class DbusTempSensor(VeDbusService):
             value = None
             try:
                 # Attempt to parse as JSON first
-                json_payload = json.loads(payload_str)
-                if isinstance(json_payload, dict) and "value" in json_payload:
-                    value = float(json_payload["value"])
+                incoming_json = json.loads(payload_str)
+                if isinstance(incoming_json, dict) and "value" in incoming_json:
+                    value = float(incoming_json["value"])
                 else:
-                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key: {payload_str}. Skipping update.")
                     return
             except json.JSONDecodeError:
                 # If not JSON, try to parse as a direct float
@@ -715,17 +772,17 @@ class DbusTankSensor(VeDbusService):
             logger.error(f"Failed to connect to MQTT broker, return code {rc}")
 
     def on_mqtt_message(self, client, userdata, msg):
+        """
+        MQTT callback for when a message is received on a subscribed topic.
+        Handles JSON payloads with a 'value' key, or raw string payloads.
+        """
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
 
-            dbus_path = None
-            for path, t in self.dbus_path_to_state_topic_map.items():
-                if t == topic:
-                    dbus_path = path
-                    break
-
+            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
+            
             if not dbus_path:
                 logger.warning(f"Received MQTT message on unknown topic for TankSensor: {topic}")
                 return
@@ -733,11 +790,11 @@ class DbusTankSensor(VeDbusService):
             value = None
             try:
                 # Attempt to parse as JSON first
-                json_payload = json.loads(payload_str)
-                if isinstance(json_payload, dict) and "value" in json_payload:
-                    value = float(json_payload["value"])
+                incoming_json = json.loads(payload_str)
+                if isinstance(incoming_json, dict) and "value" in incoming_json:
+                    value = float(incoming_json["value"])
                 else:
-                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key: {payload_str}. Skipping update.")
                     return
             except json.JSONDecodeError:
                 # If not JSON, try to parse as a direct float
@@ -965,10 +1022,6 @@ class DbusBattery(VeDbusService):
         self.mqtt_config = mqtt_config
         
         # Map D-Bus paths to their respective MQTT state topics from config
-        # Helper function to validate a topic string
-        def is_valid_topic(topic):
-            return topic is not None and topic != '' and 'path/to/mqtt' not in topic
-
         self.dbus_path_to_state_topic_map = {
             '/Dc/0/Current': self.device_config.get('CurrentStateTopic'),
             '/Dc/0/Power': self.device_config.get('PowerStateTopic'),
@@ -980,14 +1033,25 @@ class DbusBattery(VeDbusService):
             '/Soc': self.device_config.get('SocStateTopic'),
             '/Soh': self.device_config.get('SohStateTopic'),
             # Add alarm topics here if they are provided via MQTT
-            # '/Alarms/LowSoc': self.device_config.get('LowSocAlarmTopic'),
-            # ... and so on for other alarms
+            '/Alarms/CellImbalance': self.device_config.get('CellImbalanceAlarmTopic'),
+            '/Alarms/HighCellVoltage': self.device_config.get('HighCellVoltageAlarmTopic'),
+            '/Alarms/HighChargeCurrent': self.device_config.get('HighChargeCurrentAlarmTopic'),
+            '/Alarms/HighCurrent': self.device_config.get('HighCurrentAlarmTopic'),
+            '/Alarms/HighDischargeCurrent': self.device_config.get('HighDischargeCurrentAlarmTopic'),
+            '/Alarms/HighTemperature': self.device_config.get('HighTemperatureAlarmTopic'),
+            '/Alarms/HighVoltage': self.device_config.get('HighVoltageAlarmTopic'),
+            '/Alarms/InternalFailure': self.device_config.get('InternalFailureAlarmTopic'),
+            '/Alarms/LowCellVoltage': self.device_config.get('LowCellVoltageAlarmTopic'),
+            '/Alarms/LowSoc': self.device_config.get('LowSocAlarmTopic'),
+            '/Alarms/LowTemperature': self.device_config.get('LowTemperatureAlarmTopic'),
+            '/Alarms/LowVoltage': self.device_config.get('LowVoltageAlarmTopic'),
+            '/Alarms/StateOfHealth': self.device_config.get('StateOfHealthAlarmTopic'),
         }
 
-        # Filter out invalid topics
+        # Filter out invalid topics (None, empty string, or placeholder)
         self.dbus_path_to_state_topic_map = {
             k: v for k, v in self.dbus_path_to_state_topic_map.items()
-            if is_valid_topic(v)
+            if v is not None and v != '' and 'path/to/mqtt' not in v
         }
         
         logger.debug(f"Battery Sensor {self.device_index} - dbus_path_to_state_topic_map: {self.dbus_path_to_state_topic_map}")
@@ -1049,22 +1113,15 @@ class DbusBattery(VeDbusService):
     def on_mqtt_message(self, client, userdata, msg):
         """
         MQTT callback for when a message is received on a subscribed topic.
-        Handles JSON payloads with a 'value' key, or raw string payloads,
-        specifically for numerical values.
+        Handles JSON payloads with a 'value' key, or raw string payloads.
         """
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             logger.debug(f"Received MQTT message on topic '{topic}': {payload_str}")
 
-            dbus_path = None
-            for path, t in self.dbus_path_to_state_topic_map.items():
-                if t == topic:
-                    dbus_path = path
-                    break
+            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
             
-            logger.debug(f"Mapping topic '{topic}' to D-Bus path: {dbus_path}")
-
             if not dbus_path:
                 logger.warning(f"Received MQTT message on unknown topic for Battery: {topic}")
                 return
@@ -1072,11 +1129,11 @@ class DbusBattery(VeDbusService):
             value = None
             try:
                 # Attempt to parse as JSON first
-                json_payload = json.loads(payload_str)
-                if isinstance(json_payload, dict) and "value" in json_payload:
-                    value = json_payload["value"] # Can be float or int for alarms
+                incoming_json = json.loads(payload_str)
+                if isinstance(incoming_json, dict) and "value" in incoming_json:
+                    value = incoming_json["value"] # Can be float or int for alarms
                 else:
-                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key or is not a dictionary: {payload_str}")
+                    logger.warning(f"JSON payload for topic '{topic}' does not contain a 'value' key: {payload_str}. Skipping update.")
                     return
             except json.JSONDecodeError:
                 # If not JSON, try to parse as a direct float/int
@@ -1185,10 +1242,11 @@ def run_device_service(device_type, device_index):
         device_config = config[device_section]
         
         # MODIFIED: Retrieve all four distinct payload values from config
-        mqtt_on_state_payload = device_config.get('MqttOnStatePayload', 'ON')
-        mqtt_off_state_payload = device_config.get('MqttOffStatePayload', 'OFF')
-        mqtt_on_command_payload = device_config.get('MqttOnCommandPayload', '1') # Default to '1' for command
-        mqtt_off_command_payload = device_config.get('MqttOffCommandPayload', '0') # Default to '0' for command
+
+        mqtt_on_state_payload = device_config.get('mqtt_on_state_payload', '1')
+        mqtt_off_state_payload = device_config.get('mqtt_off_state_payload', '0')
+        mqtt_on_command_payload = device_config.get('mqtt_on_command_payload', '1') # Default to '1' for command
+        mqtt_off_command_payload = device_config.get('mqtt_off_command_payload', '0') # Default to '0' for command
 
         device_config['DeviceIndex'] = str(device_index)
         
@@ -1427,7 +1485,7 @@ def main():
         except Exception as e:
             logger.error(f"Failed to start process for tank sensor {i}: {e}")
 
-    # --- BEGIN: VIRTUAL BATTERY LAUNCHER ---
+    # --- BEGIN: VIRTUAL BATTERY INTEGRATION ---
     try:
         num_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries')
     except (configparser.NoSectionError, configparser.NoOptionError):
@@ -1453,7 +1511,7 @@ def main():
             logger.debug(f"Started process for virtual battery {i} (PID: {process.pid})")
         except Exception as e:
             logger.error(f"Failed to start process for virtual battery {i}: {e}")
-    # --- END: VIRTUAL BATTERY LAUNCHER ---
+    # --- END: VIRTUAL BATTERY INTEGRATION ---
 
     try:
         while True:
