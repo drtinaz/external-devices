@@ -443,7 +443,7 @@ class DbusTempSensor(VeDbusService):
         self.add_path('/Mgmt/ProcessVersion', '0.1.18') # Updated version
         self.add_path('/Mgmt/Connection', 'Virtual')
         
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstanceInstance'))
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
         self.add_path('/ProductId', 49248) # Product ID for virtual temperature sensor
         self.add_path('/ProductName', 'Virtual temperature') # Fixed product name
         self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
