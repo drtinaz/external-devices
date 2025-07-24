@@ -398,7 +398,7 @@ class DbusDigitalInput(VeDbusService):
 
     def handle_dbus_change(self, path, value):
         try:
-            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count', 'InvertAlarm', 'AlarmSetting'
+            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count'
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             
             # Modified: Convert integer 'Type' back to text for config file saving
