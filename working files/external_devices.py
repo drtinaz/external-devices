@@ -244,6 +244,7 @@ class DbusDigitalInput(VeDbusService):
     # Added mapping for text to integer conversion
     DIGITAL_INPUT_TYPES = {
         'disabled': 0,
+        'pulse meter': 1,
         'door alarm': 2,
         'bilge pump': 3,
         'bilge alarm': 4,
@@ -251,6 +252,9 @@ class DbusDigitalInput(VeDbusService):
         'smoke alarm': 6,
         'fire alarm': 7,
         'co2 alarm': 8,
+        'generator': 9,
+        'touch input control': 10,
+        'generic': 3 # Default if not specified or unrecognized
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_config):
@@ -283,7 +287,10 @@ class DbusDigitalInput(VeDbusService):
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        
+        # Added new D-Bus paths for InvertAlarm and AlarmSetting
+        self.add_path('/Settings/InvertAlarm', self.device_config.getint('InvertAlarm', 0), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Settings/AlarmSetting', self.device_config.getint('AlarmSetting', 0), writeable=True, onchangecallback=self.handle_dbus_change)
+
         # Read-only paths updated by the service
         self.add_path('/Connected', 1)
         self.add_path('/InputState', 0)
