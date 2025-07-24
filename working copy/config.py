@@ -6,17 +6,15 @@ import subprocess
 import paho.mqtt.client as mqtt
 import time
 import re
-import logging # Import the logging module
-import sys     # Import sys for stdout logging
+import logging
+import sys
 
 # Configure logging for this script itself
-# This level applies to config.py's own output and is independent of the 'loglevel' saved in the config file.
 logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Global variable to store discovered topics and device info
-# Will store { "module_serial": {"device_type": "dingtian/shelly", "topics": set(), "base_topic_path": "..."} }
 discovered_modules_and_topics_global = {}
 
 # --- Existing functions (unchanged) ---
@@ -39,28 +37,33 @@ def parse_mqtt_device_topic(topic):
     """
     logger.debug(f"Attempting to parse topic: {topic}")
 
-    # Dingtian Regex: Flexible 'dingtian' path segment, then 'relay[alphanumeric]', then optional path, then 'out'|'in', then 'r[digits]'
-    # Group 1: path_segment_with_dingtian (e.g., 'dingtian' or 'home/automation/dingtian_xyz')
-    # Group 2: module_serial (e.g., 'relay1a76f')
-    # Group 3: relay_type ('out' or 'in')
-    # Group 4: relay_number (digits after 'r')
+    # NEW: Dingtian Input Regex: Flexible 'dingtian' path segment, then 'relay[alphanumeric]', then optional path, then 'out/i[digits]'
+    # User specified that 'out/ix' topics are for digital inputs.
+    dingtian_input_match = re.search(r'(?:^|.*/)([a-zA-Z0-9_-]*dingtian[a-zA-Z0-9_-]*)/(relay[a-zA-Z0-9]+)/(?:.*/)?out/i([0-9]+)$', topic)
+    if dingtian_input_match:
+        path_segment_with_dingtian = dingtian_input_match.group(1)
+        module_serial = dingtian_input_match.group(2)
+        full_topic_base = f"{path_segment_with_dingtian}/{module_serial}"
+        logger.debug(f"Matched Dingtian Input (out/iX): Type=dingtian, Serial={module_serial}, ComponentType=in, ComponentID={dingtian_input_match.group(3)}, Base={full_topic_base}")
+        return 'dingtian', module_serial, 'in', dingtian_input_match.group(3), full_topic_base
+
+
+    # Existing Dingtian Output/Input Regex: Flexible 'dingtian' path segment, then 'relay[alphanumeric]', then optional path, then 'out'|'in', then 'r[digits]'
     dingtian_match = re.search(r'(?:^|.*/)([a-zA-Z0-9_-]*dingtian[a-zA-Z0-9_-]*)/(relay[a-zA-Z0-9]+)/(?:.*/)?(out|in)/r([0-9]+)$', topic)
     if dingtian_match:
         path_segment_with_dingtian = dingtian_match.group(1)
         module_serial = dingtian_match.group(2)
         full_topic_base = f"{path_segment_with_dingtian}/{module_serial}"
-        logger.debug(f"Matched Dingtian: Type=dingtian, Serial={module_serial}, ComponentType={dingtian_match.group(3)}, ComponentID={dingtian_match.group(4)}, Base={full_topic_base}")
+        logger.debug(f"Matched Dingtian (out/in/rX): Type=dingtian, Serial={module_serial}, ComponentType={dingtian_match.group(3)}, ComponentID={dingtian_match.group(4)}, Base={full_topic_base}")
         return 'dingtian', module_serial, dingtian_match.group(3), dingtian_match.group(4), full_topic_base
 
     # Shelly Regex (Updated for broader path matching and case-insensitivity)
-    # Group 1: The module_serial (e.g., 'shellyplus1pm-08f9e0fe4034')
-    # Group 2: The switch ID (digit after switch:)
     shelly_match = re.search(r'(?:^|.*/)(shelly[a-zA-Z0-9_-]+)(?:/.*)?/status/switch:([0-9]+)$', topic, re.IGNORECASE)
     if shelly_match:
-        module_serial = shelly_match.group(1) # e.g., 'shellyplus1pm-08f9e0fe4034'
-        full_topic_base = module_serial # The device ID itself forms the base for Shelly
-        component_id = shelly_match.group(2) # e.g., '0' or '1'
-        component_type = 'relay' # This pattern is for relays/switches
+        module_serial = shelly_match.group(1)
+        full_topic_base = module_serial
+        component_id = shelly_match.group(2)
+        component_type = 'relay'
         logger.debug(f"Matched Shelly: Type=shelly, Serial={module_serial}, ComponentType={component_type}, ComponentID={component_id}, Base={full_topic_base}")
         return 'shelly', module_serial, component_type, component_id, full_topic_base
 
@@ -68,10 +71,9 @@ def parse_mqtt_device_topic(topic):
     return None, None, None, None, None
 
 def on_connect(client, userdata, flags, rc):
-    logger.info(f"Connected to MQTT broker with result code {rc}")
-    # Subscribe to a wildcard topic '#' to catch all messages.
+    print(f"Connected to MQTT broker with result code {rc}")
     client.subscribe("#")
-    logger.info("Subscribed to '#' for device discovery, will filter for 'dingtian' or 'shelly' in topics.")
+    print("Subscribed to '#' for device discovery, will filter for 'dingtian' or 'shelly' in topics.")
 
 def on_message(client, userdata, msg):
     """Callback for when a PUBLISH message is received from the server."""
@@ -79,12 +81,12 @@ def on_message(client, userdata, msg):
     logger.debug(f"Received MQTT message on topic: {topic}")
     device_type, module_serial, component_type, component_id, full_topic_base = parse_mqtt_device_topic(topic)
 
-    if module_serial: # Ensure a module serial was found
+    if module_serial:
         if module_serial not in discovered_modules_and_topics_global:
             discovered_modules_and_topics_global[module_serial] = {
                 "device_type": device_type,
                 "topics": set(),
-                "base_topic_path": full_topic_base # Store the base topic path
+                "base_topic_path": full_topic_base
             }
             logger.debug(f"Discovered new module: {device_type} with serial {module_serial}")
         discovered_modules_and_topics_global[module_serial]["topics"].add(topic)
@@ -95,14 +97,12 @@ def on_message(client, userdata, msg):
 # --- Modified Function for MQTT Connection and Discovery ---
 def get_mqtt_broker_info(current_broker_address=None, current_port=None, current_username=None, current_password=None):
     """Prompts user for MQTT broker details, showing existing values as defaults."""
-    logger.info("\n--- MQTT Broker Configuration ---")
+    print("\n--- MQTT Broker Configuration ---")
 
-    # Use fallback 'not set' or specific defaults for display
     broker_address = input(f"Enter MQTT broker address (current: {current_broker_address if current_broker_address else 'not set'}): ") or (current_broker_address if current_broker_address else '')
     port = input(f"Enter MQTT port (current: {current_port if current_port else '1883'}): ") or (current_port if current_port else '1883')
     username = input(f"Enter MQTT username (current: {current_username if current_username else 'not set'}; leave blank if none): ") or (current_username if current_username else '')
 
-    # Mask password if existing, only show 'not set' or '******'
     password_display = '******' if current_password else 'not set'
     password = input(f"Enter MQTT password (current: {password_display}; leave blank if none): ") or (current_password if current_password else '')
 
@@ -113,24 +113,23 @@ def discover_devices_via_mqtt(client):
     Connects to MQTT broker and attempts to discover Dingtian and Shelly devices by listening to topics.
     """
     global discovered_modules_and_topics_global
-    discovered_modules_and_topics_global.clear() # Clear any previous discovery results
+    discovered_modules_and_topics_global.clear()
 
-    logger.info("\nAttempting to discover Dingtian and Shelly devices via MQTT by listening to topics...")
-    logger.info(" (This requires devices to be actively publishing data on topics containing 'dingtian' or 'shelly'.)")
+    print("\nAttempting to discover Dingtian and Shelly devices via MQTT by listening to topics...")
+    print(" (This requires devices to be actively publishing data on topics containing 'dingtian' or 'shelly'.)")
 
     client.on_connect = on_connect
     client.on_message = on_message
 
-    client.loop_start() # Start the non-blocking loop in a separate thread
+    client.loop_start()
 
-    # Give some time for messages to arrive and be processed
-    discovery_duration = 60 # seconds (Increased from 30 to 60)
-    logger.info(f"Listening for messages for {discovery_duration} seconds...")
-    time.sleep(discovery_duration) # Wait for messages
+    discovery_duration = 60
+    print(f"Listening for messages for {discovery_duration} seconds...")
+    time.sleep(discovery_duration)
 
-    client.loop_stop() # Stop the loop
+    client.loop_stop()
 
-    logger.info(f"Found {len(discovered_modules_and_topics_global)} potential Dingtian/Shelly modules.")
+    print(f"Found {len(discovered_modules_and_topics_global)} potential Dingtian/Shelly modules.")
     return discovered_modules_and_topics_global
 
 def create_or_edit_config():
@@ -146,12 +145,12 @@ def create_or_edit_config():
     config = configparser.ConfigParser()
     file_exists = os.path.exists(config_path)
 
-    # Initialize data structures to hold existing configuration
-    existing_relay_modules_by_index = {} # {1: {'serial': '...', 'instance': N, ...}}
-    existing_switches_by_module_and_switch_idx = {} # {(1,1): {'name': '...', 'state_topic': '...', ...}}
-    existing_temp_sensors_by_index = {} # {1: {'serial': '...', ...}}
-    existing_tank_sensors_by_index = {} # {1: {'serial': '...', ...}}
-    existing_virtual_batteries_by_index = {} # {1: {'serial': '...', ...}}
+    existing_relay_modules_by_index = {}
+    existing_switches_by_module_and_switch_idx = {}
+    existing_inputs_by_module_and_input_idx = {}
+    existing_temp_sensors_by_index = {}
+    existing_tank_sensors_by_index = {}
+    existing_virtual_batteries_by_index = {}
 
 
     highest_relay_module_idx_in_file = 0
@@ -159,23 +158,22 @@ def create_or_edit_config():
     highest_tank_sensor_idx_in_file = 0
     highest_virtual_battery_idx_in_file = 0
 
-    highest_existing_device_instance = 99 # Default starting instance for new devices
+    highest_existing_device_instance = 99
     highest_existing_device_index = 0
 
-    # Variables to hold existing MQTT settings
     existing_mqtt_broker = ''
     existing_mqtt_port = '1883'
     existing_mqtt_username = ''
     existing_mqtt_password = ''
-    current_loglevel_from_config = 'INFO' # Default for config file loglevel
+    current_loglevel_from_config = 'INFO'
 
     if file_exists:
-        logger.info(f"Existing config file found at {config_path}.")
+        print(f"Existing config file found at {config_path}.")
         while True:
-            logger.info("\n--- Configuration Options ---")
-            logger.info("1) Continue to configuration (update existing)")
-            logger.info("2) Create new configuration (WARNING: Existing configuration will be overwritten!)")
-            logger.info("3) Delete existing configuration and exit (WARNING: This cannot be undone!)")
+            print("\n--- Configuration Options ---")
+            print("1) Continue to configuration (update existing)")
+            print("2) Create new configuration (WARNING: Existing configuration will be overwritten!)")
+            print("3) Delete existing configuration and exit (WARNING: This cannot be undone!)")
 
             choice = input("Enter your choice (1, 2 or 3): ")
 
@@ -183,15 +181,12 @@ def create_or_edit_config():
                 config.read(config_path)
                 current_loglevel_from_config = config.get('Global', 'loglevel', fallback='INFO')
 
-                # Load existing MQTT settings
                 existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
                 existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
                 existing_mqtt_username = config.get('MQTT', 'username', fallback='')
                 existing_mqtt_password = config.get('MQTT', 'password', fallback='')
 
-                # Load existing device configurations into dictionaries
                 for section in config.sections():
-                    # Update highest device instance and index found in file
                     if config.has_option(section, 'deviceinstance'):
                         try:
                             instance = config.getint(section, 'deviceinstance')
@@ -207,7 +202,6 @@ def create_or_edit_config():
                         except ValueError:
                             pass
 
-                    # Load Relay Modules
                     if section.startswith('Relay_Module_'):
                         try:
                             module_idx = int(section.split('_')[2])
@@ -218,15 +212,17 @@ def create_or_edit_config():
                                 'deviceindex': config.getint(section, 'deviceindex', fallback=0),
                                 'customname': config.get(section, 'customname', fallback=f'Relay Module {module_idx}'),
                                 'numberofswitches': config.getint(section, 'numberofswitches', fallback=0),
+                                'numberofinputs': config.getint(section, 'numberofinputs', fallback=0),
                                 'mqtt_on_state_payload': config.get(section, 'mqtt_on_state_payload', fallback='ON'),
                                 'mqtt_off_state_payload': config.get(section, 'mqtt_off_state_payload', fallback='OFF'),
                                 'mqtt_on_command_payload': config.get(section, 'mqtt_on_command_payload', fallback='ON'),
                                 'mqtt_off_command_payload': config.get(section, 'mqtt_off_command_payload', fallback='OFF'),
+                                # Added moduleserial for discovery exclusion
+                                'moduleserial': config.get(section, 'moduleserial', fallback=''),
                             }
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed Relay_Module section: {section}")
 
-                    # Load Switches
                     elif section.startswith('switch_'):
                         try:
                             parts = section.split('_')
@@ -241,7 +237,24 @@ def create_or_edit_config():
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed switch section: {section}")
 
-                    # Load Temp Sensors
+                    elif section.startswith('input_'):
+                        try:
+                            parts = section.split('_')
+                            module_idx = int(parts[1])
+                            input_idx = int(parts[2])
+                            existing_inputs_by_module_and_input_idx[(module_idx, input_idx)] = {
+                                'customname': config.get(section, 'customname', fallback=f'input {input_idx}'),
+                                'serial': config.get(section, 'serial', fallback=''),
+                                'deviceinstance': config.getint(section, 'deviceinstance', fallback=0),
+                                'deviceindex': config.getint(section, 'deviceindex', fallback=0),
+                                'mqttstatetopic': config.get(section, 'mqttstatetopic', fallback='path/to/mqtt/topic'),
+                                'mqtt_on_state_payload': config.get(section, 'mqtt_on_state_payload', fallback='ON'),
+                                'mqtt_off_state_payload': config.get(section, 'mqtt_off_state_payload', fallback='OFF'),
+                                'type': config.get(section, 'type', fallback='generic'),
+                            }
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed input section: {section}")
+
                     elif section.startswith('Temp_Sensor_'):
                         try:
                             sensor_idx = int(section.split('_')[2])
@@ -250,7 +263,6 @@ def create_or_edit_config():
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed Temp_Sensor section: {section}")
 
-                    # Load Tank Sensors
                     elif section.startswith('Tank_Sensor_'):
                         try:
                             sensor_idx = int(section.split('_')[2])
@@ -259,7 +271,6 @@ def create_or_edit_config():
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed Tank_Sensor section: {section}")
 
-                    # Load Virtual Batteries
                     elif section.startswith('Virtual_Battery_'):
                         try:
                             battery_idx = int(section.split('_')[2])
@@ -268,34 +279,32 @@ def create_or_edit_config():
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
 
-
-                logger.info("Continuing to update existing configuration.")
+                print("Continuing to update existing configuration.")
                 break
             elif choice == '2':
                 confirm = input("Are you absolutely sure you want to overwrite the existing configuration file? This cannot be undone! (yes/no): ")
                 if confirm.lower() == 'yes':
                     os.remove(config_path)
-                    logger.info(f"Existing configuration file deleted: {config_path}")
+                    print(f"Existing configuration file deleted: {config_path}")
                     file_exists = False
                     config = configparser.ConfigParser()
                     break
                 else:
-                    logger.info("Creation of new configuration cancelled.")
+                    print("Creation of new configuration cancelled.")
             elif choice == '3':
                 confirm = input("Are you absolutely sure you want to delete the configuration file? This cannot be undone! (yes/no): ")
                 if confirm.lower() == 'yes':
                     os.remove(config_path)
-                    logger.info(f"Configuration file deleted: {config_path}")
+                    print(f"Configuration file deleted: {config_path}")
                 else:
-                    logger.info("Deletion cancelled.")
-                logger.info("Exiting script.")
+                    print("Deletion cancelled.")
+                print("Exiting script.")
                 return
             else:
-                logger.info("Invalid choice. Please enter 1, 2 or 3.")
+                print("Invalid choice. Please enter 1, 2 or 3.")
     else:
-        logger.info(f"No existing config file found. A new one will be created at {config_path}.")
+        print(f"No existing config file found. A new one will be created at {config_path}.")
 
-    # Initialize device_instance_counter and device_index_sequencer based on highest existing values
     device_instance_counter = highest_existing_device_instance + 1
     device_index_sequencer = highest_existing_device_index + 1
 
@@ -307,8 +316,6 @@ def create_or_edit_config():
     loglevel = input(f"Enter log level (options: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: {current_loglevel_prompt_default}): ") or current_loglevel_prompt_default
     config.set('Global', 'loglevel', loglevel)
 
-    # Prompt for number of relay modules
-    # new_num_relay_modules refers to the TOTAL number of modules desired
     default_num_relay_modules_initial = 1 if not file_exists else config.getint('Global', 'numberofmodules', fallback=0)
     current_num_relay_modules_setting = config.getint('Global', 'numberofmodules', fallback=default_num_relay_modules_initial)
     while True:
@@ -326,12 +333,11 @@ def create_or_edit_config():
                 new_num_relay_modules = default_num_relay_modules_initial
                 break
             else:
-                logger.info("Invalid input. Please enter a non-negative integer for the number of relay modules.")
+                print("Invalid input. Please enter a non-negative integer for the number of relay modules.")
         except ValueError:
-            logger.info("Invalid input. Please enter a non-negative integer for the number of relay modules.")
+            print("Invalid input. Please enter a non-negative integer for the number of relay modules.")
     config.set('Global', 'numberofmodules', str(new_num_relay_modules))
 
-    # Remaining global settings for other device types
     default_num_temp_sensors_initial = 0 if not file_exists else config.getint('Global', 'numberoftempsensors', fallback=0)
     current_num_temp_sensors = config.getint('Global', 'numberoftempsensors', fallback=default_num_temp_sensors_initial)
     while True:
@@ -349,9 +355,9 @@ def create_or_edit_config():
                 num_temp_sensors = default_num_temp_sensors_initial
                 break
             else:
-                logger.info("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+                print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
         except ValueError:
-            logger.info("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+            print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
     config.set('Global', 'numberoftempsensors', str(num_temp_sensors))
 
     default_num_tank_sensors_initial = 0 if not file_exists else config.getint('Global', 'numberoftanksensors', fallback=0)
@@ -371,9 +377,9 @@ def create_or_edit_config():
                 num_tank_sensors = default_num_tank_sensors_initial
                 break
             else:
-                logger.info("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+                print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
         except ValueError:
-            logger.info("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+            print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
     config.set('Global', 'numberoftanksensors', str(num_tank_sensors))
 
     default_num_virtual_batteries_initial = 0 if not file_exists else config.getint('Global', 'numberofvirtualbatteries', fallback=0)
@@ -393,9 +399,9 @@ def create_or_edit_config():
                 num_virtual_batteries = default_num_virtual_batteries_initial
                 break
             else:
-                logger.info("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+                print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
         except ValueError:
-            logger.info("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+            print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
     config.set('Global', 'numberofvirtualbatteries', str(num_virtual_batteries))
 
     # --- MQTT Broker Info ---
@@ -407,46 +413,43 @@ def create_or_edit_config():
     )
 
     # --- Device Discovery ---
-    # Only attempt discovery if the target number of modules is greater than the number of modules
-    # that existed in the file (if updating), or if it's a new config and modules are desired.
     should_attempt_discovery = False
-    # Attempt discovery if there's a possibility of adding new modules beyond what's already configured.
     if new_num_relay_modules > highest_relay_module_idx_in_file:
         should_attempt_discovery = True
 
-    # This will store discovered module serials mapped to their properties, if selected for auto-config
     auto_configured_serials_to_info = {}
 
     if should_attempt_discovery:
         while True:
-            discovery_choice = input("\nDo you want to try to discover Dingtian/Shelly modules via MQTT, or proceed to manual configuration? (discover/manual): ").lower()
-            if discovery_choice in ['discover', 'manual']:
+            discovery_choice = input("\nDo you want to try to discover Dingtian/Shelly modules via MQTT?(yes/no): ").lower()
+            if discovery_choice in ['yes', 'no']:
                 break
             else:
-                logger.info("Invalid choice. Please enter 'discover' or 'manual'.")
+                print("Invalid choice. Please enter 'yes' or 'no'.")
 
-        if discovery_choice == 'discover':
+        if discovery_choice == 'yes':
             mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
             if username:
                 mqtt_client.username_pw_set(username, password)
 
             try:
-                logger.info(f"Connecting to MQTT broker at {broker_address}:{port}...")
+                print(f"Connecting to MQTT broker at {broker_address}:{port}...")
                 mqtt_client.connect(broker_address, port, 60)
-                logger.info("Connected to MQTT broker.")
+                print("Connected to MQTT broker.")
 
                 all_discovered_modules_with_topics = discover_devices_via_mqtt(mqtt_client)
 
                 mqtt_client.disconnect()
-                logger.info("Disconnected from MQTT broker.")
+                print("Disconnected from MQTT broker.")
 
-                # Filter out already configured modules (by serial) for auto-discovery presentation
                 newly_discovered_modules_to_propose = {}
                 skipped_modules_count = 0
                 for module_serial, module_info in all_discovered_modules_with_topics.items():
                     is_already_in_config = False
                     for existing_mod_data in existing_relay_modules_by_index.values():
-                        if existing_mod_data.get('serial') == module_serial: # Check if serial is already in any existing module
+                        # Check both 'serial' and 'moduleserial' for exclusion
+                        if existing_mod_data.get('serial') == module_serial or \
+                           existing_mod_data.get('moduleserial') == module_serial:
                             is_already_in_config = True
                             break
                     if not is_already_in_config:
@@ -454,15 +457,15 @@ def create_or_edit_config():
                     else:
                         skipped_modules_count += 1
                 if skipped_modules_count > 0:
-                    logger.info(f"\nSkipped {skipped_modules_count} discovered modules as they appear to be already configured by serial.")
+                    print(f"\nSkipped {skipped_modules_count} discovered modules as they appear to be already configured by serial or moduleserial.")
 
 
                 if newly_discovered_modules_to_propose:
-                    logger.info("\n--- Newly Discovered Modules (by Serial Number) ---")
+                    print("\n--- Newly Discovered Modules (by Serial Number) ---")
                     discovered_module_serials_list = sorted(list(newly_discovered_modules_to_propose.keys()))
                     for i, module_serial in enumerate(discovered_module_serials_list):
                         module_info = newly_discovered_modules_to_propose[module_serial]
-                        logger.info(f"{i+1}) Device Type: {module_info['device_type'].capitalize()}, Module Serial: {module_serial}")
+                        print(f"{i+1}) Device Type: {module_info['device_type'].capitalize()}, Module Serial: {module_serial}")
 
                     selected_indices_input = input("Enter the numbers of the modules you want to auto-configure (e.g., 1,3,4 or 'all'): ")
                     selected_serials_for_auto_config = []
@@ -476,95 +479,101 @@ def create_or_edit_config():
                                 if 0 <= idx < len(discovered_module_serials_list):
                                     selected_serials_for_auto_config.append(discovered_module_serials_list[idx])
                                 else:
-                                    logger.info(f"Warning: Invalid selection number {idx+1} ignored.")
+                                    print(f"Warning: Invalid selection number {idx+1} ignored.")
                         except ValueError:
-                            logger.info("Invalid input for selection. No specific modules selected for auto-configuration.")
+                            print("Invalid input for selection. No specific modules selected for auto-configuration.")
 
                     if selected_serials_for_auto_config:
-                        logger.info(f"\n--- Staging Auto-Configuration for Selected Modules ---")
+                        print(f"\n--- Staging Auto-Configuration for Selected Modules ---")
 
                         for module_serial in selected_serials_for_auto_config:
-                            # Add to auto_configured_serials_to_info for later use in main loop
                             auto_configured_serials_to_info[module_serial] = newly_discovered_modules_to_propose[module_serial]
-                            logger.info(f"  Module {module_serial} selected for auto-configuration.")
+                            print(f"  Module {module_serial} selected for auto-configuration.")
+                            print(f"\n--- continuing to manual configuration of existing devices, if present ---")
                     else:
-                        logger.info("\nNo specific modules selected for auto-configuration.")
+                        print("\nNo specific modules selected for auto-configuration.")
                 else:
-                    logger.info("\nNo new Dingtian or Shelly modules found via MQTT topic discovery to auto-configure.")
+                    print("\nNo new Dingtian or Shelly modules found via MQTT topic discovery to auto-configure.")
 
             except Exception as e:
                 logger.error(f"\nCould not connect to MQTT broker or perform discovery: {e}")
-                logger.info("Proceeding with manual configuration without MQTT discovery.")
+                print("Proceeding with manual configuration without MQTT discovery.")
         else:
-            logger.info("\nSkipping MQTT discovery.")
+            print("\nSkipping MQTT discovery.")
     else:
-        logger.info("\nSkipping Dingtian/Shelly module discovery (number of relay modules not increased from previous setting or is 0 for new config).")
+        print("\nSkipping Dingtian/Shelly module discovery (number of relay modules not increased from previous setting or is 0 for new config).")
 
 
     # --- Main Configuration Loop for Relay Modules ---
-    logger.info("\n--- Configuring Relay Modules ---")
-    # Store which auto-configured serials have been used to ensure each is assigned once
+    print("\n--- Configuring Relay Modules ---")
     used_auto_configured_serials = set()
 
     for i in range(1, new_num_relay_modules + 1):
         relay_module_section = f'Relay_Module_{i}'
 
-        # Get existing data for this module index, if available
         module_data_from_file = existing_relay_modules_by_index.get(i, {})
 
-        current_serial = module_data_from_file.get('serial', None) # Start with existing serial if any
-        is_auto_configured_for_this_slot = False # Flag to track if THIS specific module (slot 'i') is being auto-configured
-        module_info_from_discovery = None # Initialize to None
+        current_serial = module_data_from_file.get('serial', None)
+        is_auto_configured_for_this_slot = False
+        module_info_from_discovery = None
+        discovered_module_serial_for_slot = None # To hold the specific auto_serial_key for this slot
 
-        # If this is a new module slot (i.e., not found in existing_relay_modules_by_index)
-        # AND we still have auto-discovered serials that haven't been assigned yet:
+
         if i not in existing_relay_modules_by_index and (len(auto_configured_serials_to_info) > len(used_auto_configured_serials)):
-            # Find the first unused auto-discovered serial
             for auto_serial_key in sorted(auto_configured_serials_to_info.keys()):
                 if auto_serial_key not in used_auto_configured_serials:
-                    current_serial = generate_serial() # <--- MODIFIED LINE: Generate a random serial
+                    # 'serial' remains randomized as per user's request to avoid MQTT client ID issues
+                    current_serial = generate_serial()
+                    discovered_module_serial_for_slot = auto_serial_key # Store the discovered serial for 'moduleserial' field
                     module_info_from_discovery = auto_configured_serials_to_info[auto_serial_key]
                     is_auto_configured_for_this_slot = True
-                    used_auto_configured_serials.add(auto_serial_key) # Mark the *discovered* serial as used
-                    logger.info(f"Auto-configuring NEW Relay Module slot {i} with generated serial {current_serial}.") # <--- MODIFIED LOG MESSAGE
-                    break # Break after assigning one
+                    used_auto_configured_serials.add(auto_serial_key)
+                    print(f"Auto-configuring NEW Relay Module slot {i}. Assigned generated serial {current_serial} and discovered module serial {discovered_module_serial_for_slot}.")
+                    break
 
-        # If current_serial is still None (either not a new slot, or no auto-discovery used/available for new slots), generate one
+        # If current_serial is still None (meaning it's a new slot not picked for auto-config, or no auto-config available)
         if current_serial is None:
             current_serial = generate_serial()
             logger.debug(f"Generated new serial {current_serial} for Relay Module slot {i}.")
 
-
-        # Determine if this is a new module slot (for instance/index logic)
         is_new_module_slot = (i > highest_relay_module_idx_in_file)
 
         if not config.has_section(relay_module_section):
             config.add_section(relay_module_section)
 
-        # Set/Update serial
-        config.set(relay_module_section, 'serial', current_serial)
+        config.set(relay_module_section, 'serial', current_serial) # Set the (generated or existing) serial
 
-        # Set/Update deviceinstance
+        # Handle 'moduleserial' field
+        if is_auto_configured_for_this_slot and discovered_module_serial_for_slot:
+            # If this is a newly auto-configured slot, set moduleserial to the discovered one
+            config.set(relay_module_section, 'moduleserial', discovered_module_serial_for_slot)
+        elif module_data_from_file.get('moduleserial'):
+            # If it's an existing module and it already has a moduleserial, retain it
+            config.set(relay_module_section, 'moduleserial', module_data_from_file['moduleserial'])
+        else:
+            # Otherwise, ensure moduleserial is not present
+            if config.has_option(relay_module_section, 'moduleserial'):
+                config.remove_option(relay_module_section, 'moduleserial')
+
+
         if is_new_module_slot:
             config.set(relay_module_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
         else:
-            current_device_instance = module_data_from_file.get('deviceinstance', highest_existing_device_instance + 1) # Fallback to a safe value
+            current_device_instance = module_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
             device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
             val = device_instance_input if device_instance_input else str(current_device_instance)
             config.set(relay_module_section, 'deviceinstance', val)
 
-        # Set/Update deviceindex
         if is_new_module_slot:
             config.set(relay_module_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
         else:
-            current_device_index = module_data_from_file.get('deviceindex', highest_existing_device_index + 1) # Fallback
+            current_device_index = module_data_from_file.get('deviceindex', highest_existing_device_index + 1)
             device_index_input = input(f"Enter device index for Relay Module {i} (current: {current_device_index}): ")
             val = device_index_input if device_index_input else str(current_device_index)
             config.set(relay_module_section, 'deviceindex', val)
 
-        # Set/Update customname
         current_custom_name = module_data_from_file.get('customname', f'Relay Module {i}')
         if is_auto_configured_for_this_slot and module_info_from_discovery:
             config.set(relay_module_section, 'customname', f"{module_info_from_discovery['device_type'].capitalize()} Module {i} (Auto)")
@@ -572,22 +581,20 @@ def create_or_edit_config():
             custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
             config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
 
-        # Set/Update numberofswitches
         current_num_switches_for_module = module_data_from_file.get('numberofswitches', 2)
         if is_auto_configured_for_this_slot and module_info_from_discovery:
-            # Determine number of switches based on discovered topics
             if module_info_from_discovery['device_type'] == 'dingtian':
                 dingtian_out_switches = set()
                 for t in module_info_from_discovery['topics']:
                     parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
-                    if parsed_serial == auto_serial_key and comp_type == 'out' and comp_id: # Use auto_serial_key for matching discovered module
+                    if parsed_serial == auto_serial_key and comp_type == 'out' and comp_id:
                         dingtian_out_switches.add(comp_id)
                 current_num_switches_for_module = len(dingtian_out_switches) if dingtian_out_switches else 1
             elif module_info_from_discovery['device_type'] == 'shelly':
                 shelly_relays = set()
                 for t in module_info_from_discovery['topics']:
                     parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
-                    if parsed_serial == auto_serial_key and comp_type == 'relay' and comp_id: # Use auto_serial_key for matching discovered module
+                    if parsed_serial == auto_serial_key and comp_type == 'relay' and comp_id:
                         shelly_relays.add(comp_id)
                 current_num_switches_for_module = len(shelly_relays) if shelly_relays else 1
             config.set(relay_module_section, 'numberofswitches', str(current_num_switches_for_module))
@@ -604,17 +611,47 @@ def create_or_edit_config():
                         num_switches = current_num_switches_for_module
                         break
                     else:
-                        logger.info("Invalid input. Please enter a positive integer for the number of switches.")
+                        print("Invalid input. Please enter a positive integer for the number of switches.")
                 except ValueError:
-                    logger.info("Invalid input. Please enter a positive integer for the number of switches.")
+                    print("Invalid input. Please enter a positive integer for the number of switches.")
             config.set(relay_module_section, 'numberofswitches', str(num_switches))
 
+        current_num_inputs_for_module = module_data_from_file.get('numberofinputs', 0)
+        if is_auto_configured_for_this_slot and module_info_from_discovery:
+            if module_info_from_discovery['device_type'] == 'dingtian':
+                dingtian_in_inputs = set()
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'in' and comp_id: # comp_type will be 'in' if the 'out/iX' regex matched
+                        dingtian_in_inputs.add(comp_id)
+                current_num_inputs_for_module = len(dingtian_in_inputs)
+                config.set(relay_module_section, 'numberofinputs', str(current_num_inputs_for_module))
+            elif module_info_from_discovery['device_type'] == 'shelly':
+                current_num_inputs_for_module = 0
+                config.set(relay_module_section, 'numberofinputs', str(current_num_inputs_for_module))
+        else:
+            while True:
+                try:
+                    num_inputs_input = input(f"Enter the number of inputs for Relay Module {i} (current: {current_num_inputs_for_module}): ")
+                    if num_inputs_input:
+                        num_inputs = int(num_inputs_input)
+                        if num_inputs < 0:
+                            raise ValueError
+                        break
+                    elif current_num_inputs_for_module >= 0:
+                        num_inputs = current_num_inputs_for_module
+                        break
+                    else:
+                        print("Invalid input. Please enter a non-negative integer for the number of inputs.")
+                except ValueError:
+                    print("Invalid input. Please enter a non-negative integer for the number of inputs.")
+            config.set(relay_module_section, 'numberofinputs', str(num_inputs))
 
-        # Set/Update MQTT payloads
+
         payload_defaults_dingtian = {'on_state': 'ON', 'off_state': 'OFF', 'on_cmd': 'ON', 'off_cmd': 'OFF'}
         payload_defaults_shelly = {'on_state': '{"output": true}', 'off_state': '{"output": false}', 'on_cmd': 'on', 'off_cmd': 'off'}
 
-        default_payloads = payload_defaults_dingtian # Start with Dingtian defaults
+        default_payloads = payload_defaults_dingtian
         if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'shelly':
             default_payloads = payload_defaults_shelly
 
@@ -640,39 +677,32 @@ def create_or_edit_config():
             mqtt_off_command_payload = input(f"Enter MQTT OFF command payload for Relay Module {i} (current: {current_mqtt_off_command_payload}): ")
             config.set(relay_module_section, 'mqtt_off_command_payload', mqtt_off_command_payload if mqtt_off_command_payload else current_mqtt_off_command_payload)
 
-        # --- Switches for this Relay Module ---
-        num_switches_for_module_section = int(config.get(relay_module_section, 'numberofswitches')) # Get the actual number of switches set for this module
+        num_switches_for_module_section = int(config.get(relay_module_section, 'numberofswitches'))
         for j in range(1, num_switches_for_module_section + 1):
-            switch_section = f'switch_{i}_{j}' # Always use numerical indexing for switch sections
+            switch_section = f'switch_{i}_{j}'
 
-            # Get existing data for this switch, if available
             switch_data_from_file = existing_switches_by_module_and_switch_idx.get((i, j), {})
 
             if not config.has_section(switch_section):
                 config.add_section(switch_section)
 
-            # Determine default topics based on auto-discovery if applicable
             auto_discovered_state_topic = None
             auto_discovered_command_topic = None
 
-            if is_auto_configured_for_this_slot and module_info_from_discovery: # Check if the parent module was auto-configured
+            if is_auto_configured_for_this_slot and module_info_from_discovery:
                 base_topic_path = module_info_from_discovery['base_topic_path']
                 device_type = module_info_from_discovery['device_type']
 
                 if device_type == 'dingtian':
-                    # Find an exact match for the discovered topic
                     for t in module_info_from_discovery['topics']:
                         parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
-                        if parsed_serial == auto_serial_key and parsed_comp_type == 'out' and parsed_comp_id == str(j): # Use auto_serial_key for matching
+                        if parsed_serial == discovered_module_serial_for_slot and parsed_comp_type == 'out' and parsed_comp_id == str(j):
                             auto_discovered_state_topic = t
                             auto_discovered_command_topic = t.replace('/out/r', '/in/r', 1)
                             break
                 elif device_type == 'shelly':
-                    # Shelly state topic: DEVICE_ID/status/switch:X
-                    # Shelly relays are typically 0-indexed, so if j is 1, it maps to Shelly's switch:0
                     shelly_switch_idx = j - 1
                     auto_discovered_state_topic = f'{base_topic_path}/status/switch:{shelly_switch_idx}'
-                    # Shelly command topic: Inferred by replacing 'status' with 'command'
                     auto_discovered_command_topic = f'{base_topic_path}/command/switch:{shelly_switch_idx}'
 
 
@@ -704,20 +734,105 @@ def create_or_edit_config():
                 mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
                 config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
 
+        num_inputs_for_module_section = int(config.get(relay_module_section, 'numberofinputs'))
+        for k in range(1, num_inputs_for_module_section + 1):
+            input_section = f'input_{i}_{k}'
 
-    # --- Temperature Sensor settings ---
-    logger.info("\n--- Configuring Temperature Sensors ---")
+            input_data_from_file = existing_inputs_by_module_and_input_idx.get((i, k), {})
+
+            is_new_input_slot = (i > highest_relay_module_idx_in_file or (i == highest_relay_module_idx_in_file and k > len([s for s in existing_inputs_by_module_and_input_idx if s[0] == i])))
+
+            if not config.has_section(input_section):
+                config.add_section(input_section)
+
+            current_input_serial = input_data_from_file.get('serial', None)
+            if current_input_serial is None:
+                current_input_serial = generate_serial()
+                logger.debug(f"Generated new serial {current_input_serial} for Relay Module {i}, Input {k}.")
+            config.set(input_section, 'serial', current_input_serial)
+
+            if is_new_input_slot:
+                config.set(input_section, 'deviceinstance', str(device_instance_counter))
+                device_instance_counter += 1
+            else:
+                current_device_instance = input_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+                device_instance_input = input(f"Enter device instance for Relay Module {i}, Input {k} (current: {current_device_instance}): ")
+                val = device_instance_input if device_instance_input else str(current_device_instance)
+                config.set(input_section, 'deviceinstance', val)
+
+            if is_new_input_slot:
+                config.set(input_section, 'deviceindex', str(device_index_sequencer))
+                device_index_sequencer += 1
+            else:
+                current_device_index = input_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+                device_index_input = input(f"Enter device index for Relay Module {i}, Input {k} (current: {current_device_index}): ")
+                val = device_index_input if device_index_input else str(current_device_index)
+                config.set(input_section, 'deviceindex', val)
+
+            current_input_custom_name = input_data_from_file.get('customname', f'Input {k}')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'customname', f"Dingtian Input {k} (Auto)")
+            else:
+                input_custom_name = input(f"Enter custom name for Relay Module {i}, Input {k} (current: {current_input_custom_name}): ")
+                config.set(input_section, 'customname', input_custom_name if input_custom_name else current_input_custom_name)
+
+            auto_discovered_input_state_topic = None
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                base_topic_path = module_info_from_discovery['base_topic_path']
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == discovered_module_serial_for_slot and parsed_comp_type == 'in' and parsed_comp_id == str(k):
+                        auto_discovered_input_state_topic = t
+                        break
+
+            current_mqtt_input_state_topic = input_data_from_file.get('mqttstatetopic', auto_discovered_input_state_topic if auto_discovered_input_state_topic else 'path/to/mqtt/input/topic')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqttstatetopic', current_mqtt_input_state_topic)
+            else:
+                mqtt_input_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, Input {k} (current: {current_mqtt_input_state_topic}): ")
+                config.set(input_section, 'mqttstatetopic', mqtt_input_state_topic if mqtt_input_state_topic else current_mqtt_input_state_topic)
+
+            current_mqtt_input_on_state_payload = input_data_from_file.get('mqtt_on_state_payload', 'ON')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqtt_on_state_payload', 'ON')
+            else:
+                mqtt_input_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_on_state_payload}): ")
+                config.set(input_section, 'mqtt_on_state_payload', mqtt_input_on_state_payload if mqtt_input_on_state_payload else current_mqtt_input_on_state_payload)
+
+            current_mqtt_input_off_state_payload = input_data_from_file.get('mqtt_off_state_payload', 'OFF')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqtt_off_state_payload', 'OFF')
+            else:
+                mqtt_input_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_off_state_payload}): ")
+                config.set(input_section, 'mqtt_off_state_payload', mqtt_input_off_state_payload if mqtt_input_off_state_payload else current_mqtt_input_off_state_payload)
+
+            input_types = ['contact', 'motion', 'door', 'window', 'generic']
+            current_input_type = input_data_from_file.get('type', 'generic')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'type', 'generic')  # Changed from 'contact' to 'generic'
+            else:
+                while True:
+                    input_type_input = input(f"Enter type for Relay Module {i}, Input {k} (options: {', '.join(input_types)}; current: {current_input_type}): ")
+                    if input_type_input:
+                        if input_type_input.lower() in input_types:
+                            config.set(input_section, 'type', input_type_input.lower())
+                            break
+                        else:
+                            print(f"Invalid type. Please choose from: {', '.join(input_types)}")
+                    else:
+                        config.set(input_section, 'type', current_input_type)
+                        break
+
+    print("\n--- Configuring Temperature Sensors ---")
     for i in range(1, num_temp_sensors + 1):
         temp_sensor_section = f'Temp_Sensor_{i}'
         sensor_data_from_file = existing_temp_sensors_by_index.get(i, {})
 
-        # Determine if this is a new sensor slot
         is_new_sensor_slot = (i > highest_temp_sensor_idx_in_file)
 
         if not config.has_section(temp_sensor_section):
             config.add_section(temp_sensor_section)
 
-        # Device Instance
         if is_new_sensor_slot:
             config.set(temp_sensor_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
@@ -726,7 +841,6 @@ def create_or_edit_config():
             device_instance_input = input(f"Enter device instance for Temperature Sensor {i} (current: {current_device_instance}): ")
             config.set(temp_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
 
-        # Device Index
         if is_new_sensor_slot:
             config.set(temp_sensor_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
@@ -742,7 +856,7 @@ def create_or_edit_config():
 
         current_serial = sensor_data_from_file.get('serial', generate_serial())
         if not sensor_data_from_file.get('serial'):
-            logger.info(f"Generated new serial for Temperature Sensor {i}: {current_serial}")
+            print(f"Generated new serial for Temperature Sensor {i}: {current_serial}")
         config.set(temp_sensor_section, 'serial', current_serial)
 
         temp_sensor_types = ['battery', 'fridge', 'room', 'outdoor', 'water heater', 'freezer', 'generic']
@@ -754,7 +868,7 @@ def create_or_edit_config():
                     config.set(temp_sensor_section, 'type', temp_type_input.lower())
                     break
                 else:
-                    logger.info(f"Invalid type. Please choose from: {', '.join(temp_sensor_types)}")
+                    print(f"Invalid type. Please choose from: {', '.join(temp_sensor_types)}")
             else:
                 config.set(temp_sensor_section, 'type', current_temp_sensor_type)
                 break
@@ -771,8 +885,7 @@ def create_or_edit_config():
         battery_state_topic = input(f"Enter MQTT battery state topic for Temperature Sensor {i} (current: {current_battery_state_topic}): ")
         config.set(temp_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
 
-    # --- Tank Sensor settings ---
-    logger.info("\n--- Configuring Tank Sensors ---")
+    print("\n--- Configuring Tank Sensors ---")
     fluid_types_map = {
         'fuel': 0, 'fresh water': 1, 'waste water': 2, 'live well': 3,
         'oil': 4, 'black water': 5, 'gasoline': 6, 'diesel': 7,
@@ -782,13 +895,11 @@ def create_or_edit_config():
         tank_sensor_section = f'Tank_Sensor_{i}'
         sensor_data_from_file = existing_tank_sensors_by_index.get(i, {})
 
-        # Determine if this is a new sensor slot
         is_new_sensor_slot = (i > highest_tank_sensor_idx_in_file)
 
         if not config.has_section(tank_sensor_section):
             config.add_section(tank_sensor_section)
 
-        # Device Instance
         if is_new_sensor_slot:
             config.set(tank_sensor_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
@@ -797,7 +908,6 @@ def create_or_edit_config():
             device_instance_input = input(f"Enter device instance for Tank Sensor {i} (current: {current_device_instance}): ")
             config.set(tank_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
 
-        # Device Index
         if is_new_sensor_slot:
             config.set(tank_sensor_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
@@ -813,7 +923,7 @@ def create_or_edit_config():
 
         current_serial = sensor_data_from_file.get('serial', generate_serial())
         if not sensor_data_from_file.get('serial'):
-            logger.info(f"Generated new serial for Tank Sensor {i}: {current_serial}")
+            print(f"Generated new serial for Tank Sensor {i}: {current_serial}")
         config.set(tank_sensor_section, 'serial', current_serial)
 
         current_level_state_topic = sensor_data_from_file.get('levelstatetopic', 'path/to/mqtt/level')
@@ -841,7 +951,7 @@ def create_or_edit_config():
                     config.set(tank_sensor_section, 'fluidtype', fluid_type_input.lower())
                     break
                 else:
-                    logger.info("Invalid fluid type. Please choose from the available options.")
+                    print("Invalid fluid type. Please choose from the available options.")
             else:
                 config.set(tank_sensor_section, 'fluidtype', current_fluid_type_name)
                 break
@@ -856,19 +966,16 @@ def create_or_edit_config():
         config.set(tank_sensor_section, 'capacity', input(f"Enter tank capacity in m³ (current: {current_capacity}): ") or current_capacity)
 
 
-    # --- Virtual Battery settings ---
-    logger.info("\n--- Configuring Virtual Batteries ---")
+    print("\n--- Configuring Virtual Batteries ---")
     for i in range(1, num_virtual_batteries + 1):
         virtual_battery_section = f'Virtual_Battery_{i}'
         battery_data_from_file = existing_virtual_batteries_by_index.get(i, {})
 
-        # Determine if this is a new sensor slot
         is_new_sensor_slot = (i > highest_virtual_battery_idx_in_file)
 
         if not config.has_section(virtual_battery_section):
             config.add_section(virtual_battery_section)
 
-        # Device Instance
         if is_new_sensor_slot:
             config.set(virtual_battery_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
@@ -877,7 +984,6 @@ def create_or_edit_config():
             device_instance_input = input(f"Enter device instance for Virtual Battery {i} (current: {current_device_instance}): ")
             config.set(virtual_battery_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
 
-        # Device Index
         if is_new_sensor_slot:
             config.set(virtual_battery_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
@@ -893,7 +999,7 @@ def create_or_edit_config():
 
         current_serial = battery_data_from_file.get('serial', generate_serial())
         if not battery_data_from_file.get('serial'):
-            logger.info(f"Generated new serial for Virtual Battery {i}: {current_serial}")
+            print(f"Generated new serial for Virtual Battery {i}: {current_serial}")
         config.set(virtual_battery_section, 'serial', current_serial)
 
         current_capacity = battery_data_from_file.get('capacityah', '100')
@@ -937,7 +1043,6 @@ def create_or_edit_config():
         config.set(virtual_battery_section, 'sohstatetopic', soh_state_topic if soh_state_topic else current_soh_state_topic)
 
 
-    # --- MQTT broker settings ---
     if not config.has_section('MQTT'):
         config.add_section('MQTT')
 
@@ -946,28 +1051,23 @@ def create_or_edit_config():
     config.set('MQTT', 'username', username if username is not None else '')
     config.set('MQTT', 'password', password if password is not None else '')
 
-    # --- Cleanup sections no longer in use ---
-    logger.info("\n--- Cleaning up unused sections ---")
+    print("\n--- Cleaning up unused sections ---")
     all_sections_in_current_config = set(config.sections())
     sections_to_remove = set()
 
-    # Determine which Relay_Module_x sections should exist based on new_num_relay_modules
     expected_relay_modules = {f'Relay_Module_{i}' for i in range(1, new_num_relay_modules + 1)}
     for section in all_sections_in_current_config:
         if section.startswith('Relay_Module_') and section not in expected_relay_modules:
             sections_to_remove.add(section)
-            # Also add associated switch sections for removed module
             try:
                 module_idx_to_remove = int(section.split('_')[2])
-                for switch_section in all_sections_in_current_config:
-                    if switch_section.startswith(f'switch_{module_idx_to_remove}_'):
-                        sections_to_remove.add(switch_section)
+                for sub_section in all_sections_in_current_config:
+                    if sub_section.startswith(f'switch_{module_idx_to_remove}_') or sub_section.startswith(f'input_{module_idx_to_remove}_'):
+                        sections_to_remove.add(sub_section)
             except (ValueError, IndexError):
-                pass # Malformed section, ignore
+                pass
 
-    # Determine which switch_x_y sections should exist for modules that *do* exist
     for i in range(1, new_num_relay_modules + 1):
-        # Only check switches if the parent Relay_Module section actually exists in the config after cleanup
         if config.has_section(f'Relay_Module_{i}'):
             num_switches_for_module = config.getint(f'Relay_Module_{i}', 'numberofswitches', fallback=0)
             expected_switches_for_this_module = {f'switch_{i}_{j}' for j in range(1, num_switches_for_module + 1)}
@@ -975,55 +1075,56 @@ def create_or_edit_config():
                 if section.startswith(f'switch_{i}_') and section not in expected_switches_for_this_module:
                     sections_to_remove.add(section)
 
-    # Cleanup Temp Sensors
+            num_inputs_for_module = config.getint(f'Relay_Module_{i}', 'numberofinputs', fallback=0)
+            expected_inputs_for_this_module = {f'input_{i}_{k}' for k in range(1, num_inputs_for_module + 1)}
+            for section in all_sections_in_current_config:
+                if section.startswith(f'input_{i}_') and section not in expected_inputs_for_this_module:
+                    sections_to_remove.add(section)
+
     expected_temp_sensors = {f'Temp_Sensor_{i}' for i in range(1, num_temp_sensors + 1)}
     for section in all_sections_in_current_config:
         if section.startswith('Temp_Sensor_') and section not in expected_temp_sensors:
             sections_to_remove.add(section)
 
-    # Cleanup Tank Sensors
     expected_tank_sensors = {f'Tank_Sensor_{i}' for i in range(1, num_tank_sensors + 1)}
     for section in all_sections_in_current_config:
         if section.startswith('Tank_Sensor_') and section not in expected_tank_sensors:
             sections_to_remove.add(section)
 
-    # Cleanup Virtual Batteries
     expected_virtual_batteries = {f'Virtual_Battery_{i}' for i in range(1, num_virtual_batteries + 1)}
     for section in all_sections_in_current_config:
         if section.startswith('Virtual_Battery_') and section not in expected_virtual_batteries:
             sections_to_remove.add(section)
 
     for section_to_remove in sections_to_remove:
-        if config.has_section(section_to_remove): # Check again before removing
+        if config.has_section(section_to_remove):
             config.remove_section(section_to_remove)
-            logger.info(f"Removed unused section: {section_to_remove}")
+            print(f"Removed unused section: {section_to_remove}")
 
-    # Remove any lingering NEW_MODULE_X placeholders (shouldn't happen with new logic, but for safety)
     for section in all_sections_in_current_config:
         if section.startswith('NEW_MODULE_'):
             if config.has_section(section):
                 config.remove_section(section)
-                logger.info(f"Removed placeholder section: {section}")
+                print(f"Removed placeholder section: {section}")
 
 
     with open(config_path, 'w') as configfile:
         config.write(configfile)
-    logger.info(f"\nconfig successfully created/updated at {config_path}")
+    print(f"\nconfig successfully created/updated at {config_path}")
 
-    # Post-configuration menu
     while True:
-        logger.info("\n--- Service Options ---")
-        logger.info("1) Install and activate service (system will reboot)")
-        logger.info("2) Restart service (system will reboot)")
-        logger.info("3) Quit and exit")
+        print("\n--- Service Options ---")
+        print("1) Install and activate service (system will reboot)")
+        print("2) Restart service (system will reboot)")
+        print("3) Quit and exit")
 
         choice = input("Enter your choice (1, 2, or 3): ")
 
         if choice == '1':
-            logger.info("Running: /data/venus-os_virtual-devices/setup install")
+            print("Running: /data/venus-os_virtual-devices/setup install")
             try:
                 subprocess.run(['/data/venus-os_virtual-devices/setup', 'install'], check=True)
-                logger.info("Service installed and activated successfully. Rebooting system...")
+                print("Service installed and activated successfully. Rebooting system...")
                 subprocess.run(['reboot'], check=True)
             except subprocess.CalledProcessError as e:
                 logger.error(f"Error installing service or rebooting: {e}")
@@ -1031,7 +1132,7 @@ def create_or_edit_config():
                 logger.error("Error: '/data/venus-os_virtual-devices/setup' command not found. Please ensure the setup script exists.")
             break
         elif choice == '2':
-            logger.info("Rebooting system...")
+            print("Rebooting system...")
             try:
                 subprocess.run(['reboot'], check=True)
             except subprocess.CalledProcessError as e:
@@ -1040,10 +1141,10 @@ def create_or_edit_config():
                 logger.error("Error: 'sudo' command not found. Please ensure sudo is in your PATH.")
             break
         elif choice == '3':
-            logger.info("Exiting script.")
+            print("Exiting script.")
             break
         else:
-            logger.info("Invalid choice. Please enter 1, 2, or 3.")
+            print("Invalid choice. Please enter 1, 2, or 3.")
 
 if __name__ == "__main__":
     create_or_edit_config()
