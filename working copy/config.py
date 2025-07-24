@@ -692,7 +692,7 @@ def create_or_edit_config():
                     shelly_switch_idx = j - 1
                     auto_discovered_state_topic = f'{base_topic_path}/status/switch:{shelly_switch_idx}'
                     # Shelly command topic: Inferred by replacing 'status' with 'command'
-                    auto_discovered_command_topic = f'{base_topic_path}/command/switch:{shelly_switch_idx}.set'
+                    auto_discovered_command_topic = f'{base_topic_path}/command/switch:{shelly_switch_idx}'
 
 
             current_switch_custom_name = switch_data_from_file.get('customname', f'switch {j}')
