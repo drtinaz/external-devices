@@ -251,10 +251,9 @@ class DbusDigitalInput(VeDbusService):
         'burglar alarm': 5,
         'smoke alarm': 6,
         'fire alarm': 7,
-        'co2 alarm': 8,
+        'CO2 alarm': 8,
         'generator': 9,
-        'touch input control': 10,
-        'generic': 3 # Default if not specified or unrecognized
+        'touch input control': 10
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_config):
