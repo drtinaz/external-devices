@@ -241,6 +241,22 @@ class DbusSwitch(VeDbusService):
 # DbusDigitalInput Class
 # ====================================================================
 class DbusDigitalInput(VeDbusService):
+    # Added mapping for text to integer conversion
+    DIGITAL_INPUT_TYPES = {
+        'disabled': 0,
+        'pulse meter': 1,
+        'door alarm': 2,
+        'bilge pump': 3,
+        'bilge alarm': 4,
+        'burglar alarm': 5,
+        'smoke alarm': 6,
+        'fire alarm': 7,
+        'co2 alarm': 8,
+        'generator': 9,
+        'touch input control': 10,
+        'generic': 3 # Default if not specified or unrecognized
+    }
+
     def __init__(self, service_name, device_config, serial_number, mqtt_config):
         super().__init__(service_name, register=False)
 
@@ -263,7 +279,11 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/CustomName', self.device_config.get('CustomName', 'Digital Input'), writeable=True, onchangecallback=self.handle_dbus_change)
         self.add_path('/Count', self.device_config.getint('Count', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Type', self.device_config.getint('Type', 3), writeable=True, onchangecallback=self.handle_dbus_change) # 3 = generic
+        
+        # Modified: Convert text 'Type' from config to integer for D-Bus
+        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
+        self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change) # Use the integer value
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
@@ -356,7 +376,14 @@ class DbusDigitalInput(VeDbusService):
         try:
             key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count'
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
-            self.save_config_change(self.config_section_name, key_name, value)
+            
+            # Modified: Convert integer 'Type' back to text for config file saving
+            value_to_save = value
+            if path == '/Type':
+                # Find the string name for the given integer value, default to 'generic' if not found
+                value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'generic')
+
+            self.save_config_change(self.config_section_name, key_name, value_to_save) # Use value_to_save
             return True
         except Exception as e:
             logger.error(f"Failed to handle D-Bus change for {path}: {e}")
