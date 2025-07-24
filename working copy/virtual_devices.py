@@ -280,8 +280,8 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
+        initial_type_str = self.device_config.get('Type', 'disabled').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['disabled']) # Convert to int, default to disabled
         self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change) # Use the integer value
         
         # Settings paths
