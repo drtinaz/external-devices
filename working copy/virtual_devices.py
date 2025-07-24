@@ -98,7 +98,7 @@ class DbusSwitch(VeDbusService):
 
         self.setup_mqtt_client()
         self.register()
-        logger.info(f"Service '{service_name}' for device '{self.get_value('/CustomName')}' registered on D-Bus.")
+        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     def add_output(self, output_data):
         output_prefix = f'/SwitchableOutput/output_{output_data["index"]}'
