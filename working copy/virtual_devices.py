@@ -251,9 +251,10 @@ class DbusDigitalInput(VeDbusService):
         'burglar alarm': 5,
         'smoke alarm': 6,
         'fire alarm': 7,
-        'CO2 alarm': 8,
+        'co2 alarm': 8,
         'generator': 9,
-        'touch input control': 10
+        'touch input control': 10,
+        'generic': 3 # Default if not specified or unrecognized
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_config):
@@ -280,9 +281,9 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'disabled').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['disabled']) # Convert to int, default to disabled
-        self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change) # Use the integer value
+        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
+        self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
@@ -464,7 +465,7 @@ class DbusTempSensor(VeDbusService):
         self.setup_mqtt_client()
         
         self.register()
-        logger.info(f"Service '{service_name}' for device '{self.device_config.get('CustomName')}' registered on D-Bus.")
+        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     def setup_mqtt_client(self, retry_interval=5, max_retries=12):
         self.mqtt_client = mqtt.Client(
@@ -633,7 +634,7 @@ class DbusTankSensor(VeDbusService):
 
         self.setup_mqtt_client()
         self.register()
-        logger.info(f"Service '{service_name}' for device '{self.get_value('/CustomName')}' registered on D-Bus.")
+        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.") 
 
         if not self.is_level_direct:
             self._calculate_level_from_raw_value()
@@ -798,7 +799,8 @@ class DbusBattery(VeDbusService):
         
         self.setup_mqtt_client()
         self.register()
-        logger.info(f"Service '{service_name}' for device '{self.get_value('/CustomName')}' registered on D-Bus.")
+        # FIX: Changed self.get_value('/CustomName') to self['/CustomName']
+        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     def setup_mqtt_client(self, retry_interval=5, max_retries=12):
         self.mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=self['/Serial'])
