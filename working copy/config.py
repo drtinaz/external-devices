@@ -509,41 +509,71 @@ def create_or_edit_config():
 
     # --- Main Configuration Loop for Relay Modules ---
     logger.info("\n--- Configuring Relay Modules ---")
+    # Store which auto-configured serials have been used to ensure each is assigned once
+    used_auto_configured_serials = set()
+
     for i in range(1, new_num_relay_modules + 1):
         relay_module_section = f'Relay_Module_{i}'
-        
+
         # Get existing data for this module index, if available
         module_data_from_file = existing_relay_modules_by_index.get(i, {})
-        
-        # Check if an auto-discovered serial should be assigned to this logical index
-        assigned_serial_from_discovery = None
-        for serial, info in auto_configured_serials_to_info.items():
-            # Find an unassigned auto-discovered module to assign to this logical index
-            if serial not in [existing_relay_modules_by_index[idx]['serial'] for idx in existing_relay_modules_by_index if 'serial' in existing_relay_modules_by_index[idx]]: # Check existing serials
-                # Check if this serial was already used in an earlier logical index during THIS run
-                already_assigned_in_this_run = False
-                for prev_idx in range(1, i):
-                    if config.has_section(f'Relay_Module_{prev_idx}') and config.get(f'Relay_Module_{prev_idx}', 'serial', fallback='') == serial:
-                        already_assigned_in_this_run = True
-                        break
-                if not already_assigned_in_this_run:
-                    assigned_serial_from_discovery = serial
-                    break # Found a serial to assign
 
-        if assigned_serial_from_discovery:
-            # Use auto-discovered data
-            module_info = auto_configured_serials_to_info[assigned_serial_from_discovery]
-            current_serial = assigned_serial_from_discovery
-            current_custom_name = f"{module_info['device_type'].capitalize()} Module {i} (Auto)"
-            current_num_switches = len(module_info['topics']) # Initial guess, will refine
+        current_serial = module_data_from_file.get('serial', None)
+        is_auto_configured = False
+        module_info_from_discovery = None
+
+        # Try to find an unused auto-discovered serial for this module slot 'i'
+        if len(auto_configured_serials_to_info) > len(used_auto_configured_serials):
+            # Find the next unused auto-configured serial
+            for auto_serial_key in sorted(auto_configured_serials_to_info.keys()):
+                if auto_serial_key not in used_auto_configured_serials:
+                    # Check if this auto_serial_key is already present in an *existing* Relay_Module section
+                    # if so, we should skip assigning it again.
+                    found_in_existing_config = False
+                    for existing_mod_data in existing_relay_modules_by_index.values():
+                        if existing_mod_data.get('serial') == auto_serial_key:
+                            found_in_existing_config = True
+                            break
+
+                    if not found_in_existing_config:
+                        current_serial = auto_serial_key
+                        module_info_from_discovery = auto_configured_serials_to_info[auto_serial_key]
+                        is_auto_configured = True
+                        used_auto_configured_serials.add(auto_serial_key) # Mark as used
+                        break
+        
+        if is_auto_configured:
+            current_custom_name = f"{module_info_from_discovery['device_type'].capitalize()} Module {i} (Auto)"
+
+            # Determine number of switches based on discovered topics
+            if module_info_from_discovery['device_type'] == 'dingtian':
+                # Count unique 'out' component IDs
+                dingtian_out_switches = set()
+                for t in module_info_from_discovery['topics']:
+                    _, serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if serial == current_serial and comp_type == 'out' and comp_id:
+                        dingtian_out_switches.add(comp_id)
+                current_num_switches = len(dingtian_out_switches) if dingtian_out_switches else 1
+            elif module_info_from_discovery['device_type'] == 'shelly':
+                shelly_relays = set()
+                for t in module_info_from_discovery['topics']:
+                    _, serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if serial == current_serial and comp_type == 'relay' and comp_id:
+                        shelly_relays.add(comp_id)
+                current_num_switches = len(shelly_relays) if shelly_relays else 1
+            else:
+                current_num_switches = 1 # Fallback
+
             logger.info(f"--- Auto-configuring Relay Module {i} (Serial: {current_serial}) ---")
         else:
-            # Use data from file or generate new
-            current_serial = module_data_from_file.get('serial', generate_serial())
+            # If not auto-configured, use existing or generate new
+            if current_serial is None: # Only generate if no existing serial or auto-assigned
+                current_serial = generate_serial()
             current_custom_name = module_data_from_file.get('customname', f'Relay Module {i}')
-            current_num_switches = module_data_from_file.get('numberofswitches', 2) # Default 2 switches for new manual
+            current_num_switches = module_data_from_file.get('numberofswitches', 2)
             logger.info(f"--- Configuring Relay Module {i} (Serial: {current_serial}) ---")
-        
+
+
         if not config.has_section(relay_module_section):
             config.add_section(relay_module_section)
 
@@ -552,9 +582,18 @@ def create_or_edit_config():
 
         # Set/Update deviceinstance
         current_device_instance = module_data_from_file.get('deviceinstance', device_instance_counter)
-        device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
-        config.set(relay_module_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
-        device_instance_counter = int(config.get(relay_module_section, 'deviceinstance')) + 1
+        if is_auto_configured and not module_data_from_file.get('deviceinstance'): # Only auto-assign if not already set in file
+            config.set(relay_module_section, 'deviceinstance', str(device_instance_counter))
+            device_instance_counter += 1
+        else:
+            device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
+            val = device_instance_input if device_instance_input else str(current_device_instance)
+            config.set(relay_module_section, 'deviceinstance', val)
+            try:
+                device_instance_counter = int(val) + 1 # Update counter to ensure uniqueness
+            except ValueError:
+                pass # If user enters invalid, counter might not advance, but validation elsewhere should catch it.
+
 
         # Set/Update deviceindex
         current_device_index = module_data_from_file.get('deviceindex', device_index_sequencer)
@@ -562,53 +601,67 @@ def create_or_edit_config():
         device_index_sequencer = current_device_index + 1 # Ensure sequencer is ahead
 
         # Set/Update customname
-        custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
-        config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
+        if is_auto_configured:
+            config.set(relay_module_section, 'customname', current_custom_name)
+        else:
+            custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
+            config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
 
         # Set/Update numberofswitches
-        while True:
-            try:
-                num_switches_input = input(f"Enter the number of switches for Relay Module {i} (current: {current_num_switches if current_num_switches > 0 else 'not set'}): ")
-                if num_switches_input:
-                    num_switches = int(num_switches_input)
-                    if num_switches <= 0:
-                        raise ValueError
-                    break
-                elif current_num_switches > 0:
-                    num_switches = current_num_switches
-                    break
-                else:
+        if is_auto_configured:
+            config.set(relay_module_section, 'numberofswitches', str(current_num_switches))
+        else:
+            while True:
+                try:
+                    num_switches_input = input(f"Enter the number of switches for Relay Module {i} (current: {current_num_switches if current_num_switches > 0 else 'not set'}): ")
+                    if num_switches_input:
+                        num_switches = int(num_switches_input)
+                        if num_switches <= 0:
+                            raise ValueError
+                        break
+                    elif current_num_switches > 0:
+                        num_switches = current_num_switches
+                        break
+                    else:
+                        logger.info("Invalid input. Please enter a positive integer for the number of switches.")
+                except ValueError:
                     logger.info("Invalid input. Please enter a positive integer for the number of switches.")
-            except ValueError:
-                logger.info("Invalid input. Please enter a positive integer for the number of switches.")
-        config.set(relay_module_section, 'numberofswitches', str(num_switches))
+            config.set(relay_module_section, 'numberofswitches', str(num_switches))
+
 
         # Set/Update MQTT payloads
         payload_defaults_dingtian = {'on_state': 'ON', 'off_state': 'OFF', 'on_cmd': 'ON', 'off_cmd': 'OFF'}
         payload_defaults_shelly = {'on_state': '{"output": true}', 'off_state': '{"output": false}', 'on_cmd': 'on', 'off_cmd': 'off'}
 
         default_payloads = payload_defaults_dingtian # Start with Dingtian defaults
-        if assigned_serial_from_discovery and auto_configured_serials_to_info[assigned_serial_from_discovery]['device_type'] == 'shelly':
+        if is_auto_configured and module_info_from_discovery['device_type'] == 'shelly':
             default_payloads = payload_defaults_shelly
 
-        current_mqtt_on_state_payload = module_data_from_file.get('mqtt_on_state_payload', default_payloads['on_state'])
-        mqtt_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i} (current: {current_mqtt_on_state_payload}): ")
-        config.set(relay_module_section, 'mqtt_on_state_payload', mqtt_on_state_payload if mqtt_on_state_payload else current_mqtt_on_state_payload)
+        if is_auto_configured:
+            config.set(relay_module_section, 'mqtt_on_state_payload', default_payloads['on_state'])
+            config.set(relay_module_section, 'mqtt_off_state_payload', default_payloads['off_state'])
+            config.set(relay_module_section, 'mqtt_on_command_payload', default_payloads['on_cmd'])
+            config.set(relay_module_section, 'mqtt_off_command_payload', default_payloads['off_cmd'])
+        else:
+            current_mqtt_on_state_payload = module_data_from_file.get('mqtt_on_state_payload', default_payloads['on_state'])
+            mqtt_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i} (current: {current_mqtt_on_state_payload}): ")
+            config.set(relay_module_section, 'mqtt_on_state_payload', mqtt_on_state_payload if mqtt_on_state_payload else current_mqtt_on_state_payload)
 
-        current_mqtt_off_state_payload = module_data_from_file.get('mqtt_off_state_payload', default_payloads['off_state'])
-        mqtt_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i} (current: {current_mqtt_off_state_payload}): ")
-        config.set(relay_module_section, 'mqtt_off_state_payload', mqtt_off_state_payload if mqtt_off_state_payload else current_mqtt_off_state_payload)
+            current_mqtt_off_state_payload = module_data_from_file.get('mqtt_off_state_payload', default_payloads['off_state'])
+            mqtt_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i} (current: {current_mqtt_off_state_payload}): ")
+            config.set(relay_module_section, 'mqtt_off_state_payload', mqtt_off_state_payload if mqtt_off_state_payload else current_mqtt_off_state_payload)
 
-        current_mqtt_on_command_payload = module_data_from_file.get('mqtt_on_command_payload', default_payloads['on_cmd'])
-        mqtt_on_command_payload = input(f"Enter MQTT ON command payload for Relay Module {i} (current: {current_mqtt_on_command_payload}): ")
-        config.set(relay_module_section, 'mqtt_on_command_payload', mqtt_on_command_payload if mqtt_on_command_payload else current_mqtt_on_command_payload)
+            current_mqtt_on_command_payload = module_data_from_file.get('mqtt_on_command_payload', default_payloads['on_cmd'])
+            mqtt_on_command_payload = input(f"Enter MQTT ON command payload for Relay Module {i} (current: {current_mqtt_on_command_payload}): ")
+            config.set(relay_module_section, 'mqtt_on_command_payload', mqtt_on_command_payload if mqtt_on_command_payload else current_mqtt_on_command_payload)
 
-        current_mqtt_off_command_payload = module_data_from_file.get('mqtt_off_command_payload', default_payloads['off_cmd'])
-        mqtt_off_command_payload = input(f"Enter MQTT OFF command payload for Relay Module {i} (current: {current_mqtt_off_command_payload}): ")
-        config.set(relay_module_section, 'mqtt_off_command_payload', mqtt_off_command_payload if mqtt_off_command_payload else current_mqtt_off_command_payload)
+            current_mqtt_off_command_payload = module_data_from_file.get('mqtt_off_command_payload', default_payloads['off_cmd'])
+            mqtt_off_command_payload = input(f"Enter MQTT OFF command payload for Relay Module {i} (current: {current_mqtt_off_command_payload}): ")
+            config.set(relay_module_section, 'mqtt_off_command_payload', mqtt_off_command_payload if mqtt_off_command_payload else current_mqtt_off_command_payload)
 
         # --- Switches for this Relay Module ---
-        for j in range(1, num_switches + 1):
+        num_switches_for_module_section = int(config.get(relay_module_section, 'numberofswitches')) # Get the actual number of switches set for this module
+        for j in range(1, num_switches_for_module_section + 1):
             switch_section = f'switch_{i}_{j}' # Always use numerical indexing for switch sections
 
             # Get existing data for this switch, if available
@@ -621,41 +674,54 @@ def create_or_edit_config():
             auto_discovered_state_topic = None
             auto_discovered_command_topic = None
 
-            if assigned_serial_from_discovery:
-                module_info_discovered = auto_configured_serials_to_info[assigned_serial_from_discovery]
-                base_topic_path = module_info_discovered['base_topic_path']
-                device_type = module_info_discovered['device_type']
+            if is_auto_configured: # Check if the parent module was auto-configured
+                base_topic_path = module_info_from_discovery['base_topic_path']
+                device_type = module_info_from_discovery['device_type']
 
                 if device_type == 'dingtian':
                     # Find an exact match for the discovered topic
-                    for t in module_info_discovered['topics']:
+                    for t in module_info_from_discovery['topics']:
                         parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
-                        if parsed_serial == assigned_serial_from_discovery and parsed_comp_type == 'out' and parsed_comp_id == str(j):
+                        if parsed_serial == current_serial and parsed_comp_type == 'out' and parsed_comp_id == str(j):
                             auto_discovered_state_topic = t
                             auto_discovered_command_topic = t.replace('/out/r', '/in/r', 1)
                             break
                 elif device_type == 'shelly':
                     # Shelly state topic: DEVICE_ID/status/switch:X
-                    auto_discovered_state_topic = f'{base_topic_path}/status/switch:{j}'
+                    # Shelly relays are typically 0-indexed, so if j is 1, it maps to Shelly's switch:0
+                    shelly_switch_idx = j - 1
+                    auto_discovered_state_topic = f'{base_topic_path}/status/switch:{shelly_switch_idx}'
                     # Shelly command topic: Inferred by replacing 'status' with 'command'
-                    auto_discovered_command_topic = auto_discovered_state_topic.replace('/status/', '/command/', 1)
+                    auto_discovered_command_topic = f'{base_topic_path}/command/switch:{shelly_switch_idx}.set'
 
 
             current_switch_custom_name = switch_data_from_file.get('customname', f'switch {j}')
-            switch_custom_name = input(f"Enter custom name for Relay Module {i}, switch {j} (current: {current_switch_custom_name}): ")
-            config.set(switch_section, 'customname', switch_custom_name if switch_custom_name else current_switch_custom_name)
+            if is_auto_configured:
+                config.set(switch_section, 'customname', current_switch_custom_name)
+            else:
+                switch_custom_name = input(f"Enter custom name for Relay Module {i}, switch {j} (current: {current_switch_custom_name}): ")
+                config.set(switch_section, 'customname', switch_custom_name if switch_custom_name else current_switch_custom_name)
 
             current_switch_group = switch_data_from_file.get('group', f'Group{i}')
-            switch_group = input(f"Enter group for Relay Module {i}, switch {j} (current: {current_switch_group}): ")
-            config.set(switch_section, 'group', switch_group if switch_group else current_switch_group)
+            if is_auto_configured:
+                config.set(switch_section, 'group', current_switch_group)
+            else:
+                switch_group = input(f"Enter group for Relay Module {i}, switch {j} (current: {current_switch_group}): ")
+                config.set(switch_section, 'group', switch_group if switch_group else current_switch_group)
 
             current_mqtt_state_topic = switch_data_from_file.get('mqttstatetopic', auto_discovered_state_topic if auto_discovered_state_topic else 'path/to/mqtt/topic')
-            mqtt_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, switch {j} (current: {current_mqtt_state_topic}): ")
-            config.set(switch_section, 'mqttstatetopic', mqtt_state_topic if mqtt_state_topic else current_mqtt_state_topic)
+            if is_auto_configured:
+                config.set(switch_section, 'mqttstatetopic', current_mqtt_state_topic)
+            else:
+                mqtt_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, switch {j} (current: {current_mqtt_state_topic}): ")
+                config.set(switch_section, 'mqttstatetopic', mqtt_state_topic if mqtt_state_topic else current_mqtt_state_topic)
 
             current_mqtt_command_topic = switch_data_from_file.get('mqttcommandtopic', auto_discovered_command_topic if auto_discovered_command_topic else 'path/to/mqtt/topic')
-            mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
-            config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
+            if is_auto_configured:
+                config.set(switch_section, 'mqttcommandtopic', current_mqtt_command_topic)
+            else:
+                mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
+                config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
 
 
     # --- Temperature Sensor settings ---
