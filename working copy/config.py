@@ -250,7 +250,7 @@ def create_or_edit_config():
                                 'mqttstatetopic': config.get(section, 'mqttstatetopic', fallback='path/to/mqtt/topic'),
                                 'mqtt_on_state_payload': config.get(section, 'mqtt_on_state_payload', fallback='ON'),
                                 'mqtt_off_state_payload': config.get(section, 'mqtt_off_state_payload', fallback='OFF'),
-                                'type': config.get(section, 'type', fallback='generic'),
+                                'type': config.get(section, 'type', fallback='disabled'),
                             }
                         except (ValueError, IndexError):
                             logger.warning(f"Skipping malformed input section: {section}")
@@ -806,10 +806,10 @@ def create_or_edit_config():
                 mqtt_input_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_off_state_payload}): ")
                 config.set(input_section, 'mqtt_off_state_payload', mqtt_input_off_state_payload if mqtt_input_off_state_payload else current_mqtt_input_off_state_payload)
 
-            input_types = ['contact', 'motion', 'door', 'window', 'generic']
-            current_input_type = input_data_from_file.get('type', 'generic')
+            input_types = ['disabled', 'pulse meter', 'door alarm', 'bilge pump', 'bilge alarm', 'burglar alarm', 'smoke alarm', 'fire alarm', 'CO2 alarm', 'generator', 'touch input control']
+            current_input_type = input_data_from_file.get('type', 'disabled')
             if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
-                config.set(input_section, 'type', 'generic')  # Changed from 'contact' to 'generic'
+                config.set(input_section, 'type', 'disabled')
             else:
                 while True:
                     input_type_input = input(f"Enter type for Relay Module {i}, Input {k} (options: {', '.join(input_types)}; current: {current_input_type}): ")
