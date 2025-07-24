@@ -244,7 +244,6 @@ class DbusDigitalInput(VeDbusService):
     # Added mapping for text to integer conversion
     DIGITAL_INPUT_TYPES = {
         'disabled': 0,
-        'pulse meter': 1,
         'door alarm': 2,
         'bilge pump': 3,
         'bilge alarm': 4,
@@ -252,9 +251,6 @@ class DbusDigitalInput(VeDbusService):
         'smoke alarm': 6,
         'fire alarm': 7,
         'co2 alarm': 8,
-        'generator': 9,
-        'touch input control': 10,
-        'generic': 3 # Default if not specified or unrecognized
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_config):
@@ -281,15 +277,12 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
+        initial_type_str = self.device_config.get('Type', 'disablede').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['disabled']) # Convert to int, default to generic
         self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        # Added new D-Bus paths for InvertAlarm
-        self.add_path('/Settings/InvertAlarm', self.device_config.getint('InvertAlarm', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-
 
         # Read-only paths updated by the service
         self.add_path('/Connected', 1)
@@ -357,27 +350,55 @@ class DbusDigitalInput(VeDbusService):
                 logger.warning(f"Invalid MQTT payload '{payload_str}' received. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
                 return
 
-            # Apply inversion if set
+            # InputState always reflects the actual (raw) state
+            GLib.idle_add(self.update_dbus_input_state, raw_state)
+
+            # Apply inversion for the main State D-Bus path
             invert = self['/Settings/InvertTranslation']
             final_state = (1 - raw_state) if invert == 1 else raw_state
 
-            # Schedule D-Bus update in main thread
-            GLib.idle_add(self.update_dbus_from_mqtt, final_state)
+            # Get the D-Bus State value based on the Type setting
+            dbus_state = self._get_dbus_state_for_type(final_state)
+
+            # Schedule D-Bus update for the main State in main thread
+            GLib.idle_add(self.update_dbus_state, dbus_state)
 
         except Exception as e:
             logger.error(f"Error processing MQTT message for Digital Input: {e}")
 
-    def update_dbus_from_mqtt(self, new_state):
-        if self['/InputState'] != new_state:
-            self['/InputState'] = new_state
-            # Mirror InputState to State path as well
-            self['/State'] = new_state 
-            logger.debug(f"Updated /InputState and /State for '{self['/CustomName']}' to {new_state}")
+    def _get_dbus_state_for_type(self, logical_state):
+        """
+        Maps the logical state (0 or 1) to the specific D-Bus State value
+        based on the currently configured Type.
+        """
+        current_type = self['/Type']
+        
+        if current_type == 2:  # 'door alarm'
+            return 7 if logical_state == 1 else 6  # 7=alarm, 6=normal
+        elif current_type == 3: # 'bilge pump' or 'generic'
+            return 3 if logical_state == 1 else 2  # 3=on, 2=off
+        elif 4 <= current_type <= 8: # bilge alarm, burglar alarm, smoke alarm, fire alarm, co2 alarm
+            return 9 if logical_state == 1 else 8  # 9=alarm, 8=normal
+        
+        # For other types (disabled, pulse meter, generator, touch input control, or unmapped),
+        # return the logical state directly (0 or 1)
+        return logical_state
+
+    def update_dbus_input_state(self, new_raw_state):
+        if self['/InputState'] != new_raw_state:
+            self['/InputState'] = new_raw_state
+            logger.debug(f"Updated /InputState for '{self['/CustomName']}' to {new_raw_state}")
+        return False # Run only once
+
+    def update_dbus_state(self, new_state_value):
+        if self['/State'] != new_state_value:
+            self['/State'] = new_state_value
+            logger.debug(f"Updated /State for '{self['/CustomName']}' to {new_state_value}")
         return False # Run only once
 
     def handle_dbus_change(self, path, value):
         try:
-            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count', 'InvertAlarm'
+            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count', 'InvertAlarm', 'AlarmSetting'
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             
             # Modified: Convert integer 'Type' back to text for config file saving
@@ -385,8 +406,12 @@ class DbusDigitalInput(VeDbusService):
             if path == '/Type':
                 # Find the string name for the given integer value, default to 'generic' if not found
                 value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'generic')
-
-            self.save_config_change(self.config_section_name, key_name, value_to_save) # Use value_to_save
+            
+            # Special handling for Alarm settings as they are under /Settings
+            if path.startswith('/Settings/'):
+                self.save_config_change(self.config_section_name, key_name, value) # Save raw value for settings
+            else:
+                self.save_config_change(self.config_section_name, key_name, value_to_save) # Use value_to_save for Type and others
             return True
         except Exception as e:
             logger.error(f"Failed to handle D-Bus change for {path}: {e}")
