@@ -287,9 +287,8 @@ class DbusDigitalInput(VeDbusService):
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        # Added new D-Bus paths for InvertAlarm and AlarmSetting
+        # Added new D-Bus paths for InvertAlarm
         self.add_path('/Settings/InvertAlarm', self.device_config.getint('InvertAlarm', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Settings/AlarmSetting', self.device_config.getint('AlarmSetting', 0), writeable=True, onchangecallback=self.handle_dbus_change)
 
 
         # Read-only paths updated by the service
@@ -378,7 +377,7 @@ class DbusDigitalInput(VeDbusService):
 
     def handle_dbus_change(self, path, value):
         try:
-            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count', 'InvertAlarm', 'AlarmSetting'
+            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count', 'InvertAlarm'
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             
             # Modified: Convert integer 'Type' back to text for config file saving
