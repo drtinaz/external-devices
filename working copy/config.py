@@ -514,6 +514,7 @@ def create_or_edit_config():
 
         current_serial = module_data_from_file.get('serial', None) # Start with existing serial if any
         is_auto_configured_for_this_slot = False # Flag to track if THIS specific module (slot 'i') is being auto-configured
+        module_info_from_discovery = None # Initialize to None
 
         # If this is a new module slot (i.e., not found in existing_relay_modules_by_index)
         # AND we still have auto-discovered serials that haven't been assigned yet:
@@ -521,11 +522,11 @@ def create_or_edit_config():
             # Find the first unused auto-discovered serial
             for auto_serial_key in sorted(auto_configured_serials_to_info.keys()):
                 if auto_serial_key not in used_auto_configured_serials:
-                    current_serial = auto_serial_key
+                    current_serial = generate_serial() # <--- MODIFIED LINE: Generate a random serial
                     module_info_from_discovery = auto_configured_serials_to_info[auto_serial_key]
                     is_auto_configured_for_this_slot = True
-                    used_auto_configured_serials.add(auto_serial_key) # Mark as used
-                    logger.info(f"Auto-assigning discovered serial {current_serial} to NEW Relay Module slot {i}.")
+                    used_auto_configured_serials.add(auto_serial_key) # Mark the *discovered* serial as used
+                    logger.info(f"Auto-configuring NEW Relay Module slot {i} with generated serial {current_serial}.") # <--- MODIFIED LOG MESSAGE
                     break # Break after assigning one
 
         # If current_serial is still None (either not a new slot, or no auto-discovery used/available for new slots), generate one
@@ -578,15 +579,15 @@ def create_or_edit_config():
             if module_info_from_discovery['device_type'] == 'dingtian':
                 dingtian_out_switches = set()
                 for t in module_info_from_discovery['topics']:
-                    _, serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
-                    if serial == current_serial and comp_type == 'out' and comp_id:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'out' and comp_id: # Use auto_serial_key for matching discovered module
                         dingtian_out_switches.add(comp_id)
                 current_num_switches_for_module = len(dingtian_out_switches) if dingtian_out_switches else 1
             elif module_info_from_discovery['device_type'] == 'shelly':
                 shelly_relays = set()
                 for t in module_info_from_discovery['topics']:
-                    _, serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
-                    if serial == current_serial and comp_type == 'relay' and comp_id:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'relay' and comp_id: # Use auto_serial_key for matching discovered module
                         shelly_relays.add(comp_id)
                 current_num_switches_for_module = len(shelly_relays) if shelly_relays else 1
             config.set(relay_module_section, 'numberofswitches', str(current_num_switches_for_module))
@@ -614,7 +615,7 @@ def create_or_edit_config():
         payload_defaults_shelly = {'on_state': '{"output": true}', 'off_state': '{"output": false}', 'on_cmd': 'on', 'off_cmd': 'off'}
 
         default_payloads = payload_defaults_dingtian # Start with Dingtian defaults
-        if is_auto_configured_for_this_slot and module_info_from_discovery['device_type'] == 'shelly':
+        if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'shelly':
             default_payloads = payload_defaults_shelly
 
         if is_auto_configured_for_this_slot:
@@ -662,7 +663,7 @@ def create_or_edit_config():
                     # Find an exact match for the discovered topic
                     for t in module_info_from_discovery['topics']:
                         parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
-                        if parsed_serial == current_serial and parsed_comp_type == 'out' and parsed_comp_id == str(j):
+                        if parsed_serial == auto_serial_key and parsed_comp_type == 'out' and parsed_comp_id == str(j): # Use auto_serial_key for matching
                             auto_discovered_state_topic = t
                             auto_discovered_command_topic = t.replace('/out/r', '/in/r', 1)
                             break
