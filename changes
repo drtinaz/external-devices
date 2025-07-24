@@ -3,3 +3,5 @@ v0.1
 v1.0
   several enhancements including the addition of digital inputs, auto discovery of dingtian and shelly switches, temperature sensors, tank sensors, and mqtt battery
   reduced and consolodated code to run more efficiently.
+v1.1
+  fix file permissions
