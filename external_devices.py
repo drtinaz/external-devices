@@ -26,7 +26,7 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 logger.setLevel(logging.DEBUG)
 
-CONFIG_FILE_PATH = '/data/setupOptions/venus-os_virtual-devices/optionsSet'
+CONFIG_FILE_PATH = '/data/setupOptions/external-devices/optionsSet'
 
 try:
     sys.path.insert(1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")

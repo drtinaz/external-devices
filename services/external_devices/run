@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting external devices service ***"
+exec 2>&1
+exec /data/external-devices/external_devices.py

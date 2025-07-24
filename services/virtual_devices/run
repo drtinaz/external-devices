@@ -1,4 +1,0 @@
-#!/bin/sh
-echo "*** starting MQTT switches service ***"
-exec 2>&1
-exec /data/venus-os_virtual-devices/virtual_devices.py

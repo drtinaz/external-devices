@@ -1,13 +1,5 @@
 v0.1
   initial release
-v0.2
-  fix path in service/run
-v0.3
-  fix file permissions
-v0.4
-  enhance json handling for mqtt state topics
-  fix error in temp sensor creation
-  enhance device instance handling and assignment
-  allow number of relay modules to be 0
-v0.5
-  add back some settings in config.py that accidently got removed for tank sensor.
+v1.0
+  several enhancements including the addition of digital inputs, auto discovery of dingtian and shelly switches, temperature sensors, tank sensors, and mqtt battery
+  reduced and consolodated code to run more efficiently.

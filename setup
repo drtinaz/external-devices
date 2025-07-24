@@ -1,6 +1,6 @@
 #!/bin/bash
 
-packageLogFile="/data/venus-os_virtual-devices/log"
+packageLogFile="/data/external-devices/log"
 
 # everything done in HelperResources which never returns here !!!
 

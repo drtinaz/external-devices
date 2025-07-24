@@ -135,9 +135,9 @@ def discover_devices_via_mqtt(client):
 def create_or_edit_config():
     """
     Creates or edits a config file based on user input.
-    The file will be located in /data/setupOptions/venus-os_virtual-devices and named optionsSet.
+    The file will be located in /data/setupOptions/external-devices and named optionsSet.
     """
-    config_dir = '/data/setupOptions/venus-os_virtual-devices'
+    config_dir = '/data/setupOptions/external-devices'
     config_path = os.path.join(config_dir, 'optionsSet')
 
     os.makedirs(config_dir, exist_ok=True)
@@ -1121,15 +1121,15 @@ def create_or_edit_config():
         choice = input("Enter your choice (1, 2, or 3): ")
 
         if choice == '1':
-            print("Running: /data/venus-os_virtual-devices/setup install")
+            print("Running: /data/external-devices/setup install")
             try:
-                subprocess.run(['/data/venus-os_virtual-devices/setup', 'install'], check=True)
+                subprocess.run(['/data/external-devices/setup', 'install'], check=True)
                 print("Service installed and activated successfully. Rebooting system...")
                 subprocess.run(['reboot'], check=True)
             except subprocess.CalledProcessError as e:
                 logger.error(f"Error installing service or rebooting: {e}")
             except FileNotFoundError:
-                logger.error("Error: '/data/venus-os_virtual-devices/setup' command not found. Please ensure the setup script exists.")
+                logger.error("Error: '/data/external-devices/setup' command not found. Please ensure the setup script exists.")
             break
         elif choice == '2':
             print("Rebooting system...")
