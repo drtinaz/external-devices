@@ -277,13 +277,13 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'disablede').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['disabled']) # Convert to int, default to generic
+        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
         self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-
+        
         # Read-only paths updated by the service
         self.add_path('/Connected', 1)
         self.add_path('/InputState', 0)
@@ -398,20 +398,25 @@ class DbusDigitalInput(VeDbusService):
 
     def handle_dbus_change(self, path, value):
         try:
-            key_name = path.split('/')[-1] # e.g., 'CustomName', 'Count'
+            key_name = path.split('/')[-1]
             logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
             
-            # Modified: Convert integer 'Type' back to text for config file saving
             value_to_save = value
             if path == '/Type':
-                # Find the string name for the given integer value, default to 'generic' if not found
                 value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'generic')
             
             # Special handling for Alarm settings as they are under /Settings
             if path.startswith('/Settings/'):
-                self.save_config_change(self.config_section_name, key_name, value) # Save raw value for settings
+                self.save_config_change(self.config_section_name, key_name, value)
+                if path == '/Settings/InvertTranslation':
+                    # Recalculate and update /State immediately when InvertTranslation changes
+                    current_raw_state = self['/InputState']
+                    new_invert_setting = value # 'value' is the new InvertTranslation setting (0 or 1)
+                    final_state_after_inversion = (1 - current_raw_state) if new_invert_setting == 1 else current_raw_state
+                    new_dbus_state_value = self._get_dbus_state_for_type(final_state_after_inversion)
+                    GLib.idle_add(self.update_dbus_state, new_dbus_state_value)
             else:
-                self.save_config_change(self.config_section_name, key_name, value_to_save) # Use value_to_save for Type and others
+                self.save_config_change(self.config_section_name, key_name, value_to_save)
             return True
         except Exception as e:
             logger.error(f"Failed to handle D-Bus change for {path}: {e}")
@@ -704,6 +709,8 @@ class DbusTankSensor(VeDbusService):
                 incoming_json = json.loads(payload_str)
                 if isinstance(incoming_json, dict) and "value" in incoming_json:
                     value = float(incoming_json["value"])
+                else:
+                    return
             except json.JSONDecodeError:
                 try: value = float(payload_str)
                 except ValueError: return
@@ -1024,7 +1031,7 @@ def main():
         section_lower = section.lower()
         for prefix, device_type in device_type_map.items():
             if section_lower.startswith(prefix):
-                logger.info(f"Found device '{section}' of type '{device_type}'. Starting process...")
+                logger.info(f"Found device '{section}' of type '{device_type}'. Starting process...\n")
                 cmd = [sys.executable, script_path, device_type, section]
                 try:
                     process = subprocess.Popen(cmd, env=os.environ, close_fds=True)
