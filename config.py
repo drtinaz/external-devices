@@ -806,7 +806,7 @@ def create_or_edit_config():
                 mqtt_input_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_off_state_payload}): ")
                 config.set(input_section, 'mqtt_off_state_payload', mqtt_input_off_state_payload if mqtt_input_off_state_payload else current_mqtt_input_off_state_payload)
 
-            input_types = ['disabled', 'pulse meter', 'door alarm', 'bilge pump', 'bilge alarm', 'burglar alarm', 'smoke alarm', 'fire alarm', 'CO2 alarm', 'generator', 'touch input control']
+            input_types = ['disabled', 'door alarm', 'bilge pump', 'bilge alarm', 'burglar alarm', 'smoke alarm', 'fire alarm', 'CO2 alarm']
             current_input_type = input_data_from_file.get('type', 'disabled')
             if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
                 config.set(input_section, 'type', 'disabled')
