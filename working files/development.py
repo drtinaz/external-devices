@@ -1112,8 +1112,8 @@ def main():
                     
                     mqtt_on_state = device_config.get('mqtt_on_state_payload', '1')
                     mqtt_off_state = device_config.get('mqtt_off_state_payload', '0')
-                    mqtt_on_cmd = device_config.get('MqttOnCommandPayload', '1')
-                    mqtt_off_cmd = device_config.get('MqttOffCommandPayload', '0')
+                    mqtt_on_cmd = device_config.get('mqtt_on_command_payload', '1')
+                    mqtt_off_cmd = device_config.get('mqtt_off_command_payload', '0')
 
                     num_switches = device_config.getint('NumberOfSwitches', 1)
                     for j in range(1, num_switches + 1):
