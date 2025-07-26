@@ -57,11 +57,32 @@ class DbusSwitch(VeDbusService):
 
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex') # This 'DeviceIndex' now comes from either Relay_Module_X or switch_X_Y
+        self.mqtt_on_state_payload_raw = mqtt_on_state_payload
+        self.mqtt_off_state_payload_raw = mqtt_off_state_payload
+        self.mqtt_on_command_payload = mqtt_on_command_payload
+        self.mqtt_off_command_payload = mqtt_off_command_payload
+        self.mqtt_on_state_payload_json = None
+        self.mqtt_off_state_payload_json = None
+
+        try:
+            parsed_on = json.loads(mqtt_on_state_payload)
+            if isinstance(parsed_on, dict) and len(parsed_on) == 1:
+                self.mqtt_on_state_payload_json = parsed_on
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            # Fix: Use mqtt_off_state_payload instead of undefined mqtt_off_payload
+            parsed_off = json.loads(mqtt_off_state_payload)
+            if isinstance(parsed_off, dict) and len(parsed_off) == 1:
+                self.mqtt_off_state_payload_json = parsed_off
+        except json.JSONDecodeError:
+            pass
 
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.19')
         self.add_path('/Mgmt/Connection', 'Virtual')
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstanceInstance'))
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
         self.add_path('/ProductId', 49257)
         self.add_path('/ProductName', 'Virtual switch')
         self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
@@ -73,29 +94,6 @@ class DbusSwitch(VeDbusService):
 
         # Use the global MQTT client passed in
         self.mqtt_client = mqtt_client
-
-        # Store these module-wide payloads directly in the instance
-        self.mqtt_on_state_payload_raw = mqtt_on_state_payload
-        self.mqtt_off_state_payload_raw = mqtt_off_state_payload
-        self.mqtt_on_command_payload = mqtt_on_command_payload
-        self.mqtt_off_command_payload = mqtt_off_command_payload
-        
-        self.mqtt_on_state_payload_json = None
-        self.mqtt_off_state_payload_json = None
-
-        # Helper for JSON parsing (can be a static method or just inline)
-        def _parse_payload_to_json_local(payload_str):
-            try:
-                parsed = json.loads(payload_str)
-                if isinstance(parsed, dict) and len(parsed) == 1:
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-            return None
-
-        self.mqtt_on_state_payload_json = _parse_payload_to_json_local(mqtt_on_state_payload)
-        self.mqtt_off_state_payload_json = _parse_payload_to_json_local(mqtt_off_state_payload)
-
 
         self.dbus_path_to_state_topic_map = {}
         self.dbus_path_to_command_topic_map = {}
@@ -122,7 +120,6 @@ class DbusSwitch(VeDbusService):
             # Subscribe to the topic
             self.mqtt_client.subscribe(state_topic) # Explicitly subscribe here
             logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {state_topic}")
-            logger.debug(f"DbusSwitch '{self['/CustomName']}' output {output_data['index']} expects ON='{self.mqtt_on_state_payload_raw}' OFF='{self.mqtt_off_state_payload_raw}' for state.")
         else:
             logger.warning(f"MQTT topics for {dbus_state_path} in DbusSwitch are invalid. Ignoring.")
 
@@ -142,64 +139,35 @@ class DbusSwitch(VeDbusService):
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             new_state = None
-
-            # Get the D-Bus path associated with this topic
-            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
-            if not dbus_path:
-                logger.warning(f"DbusSwitch: Received message on unmapped state topic '{topic}'. Ignoring.")
-                return
-
-            # Use the module-wide payloads stored in self.
-            on_state_raw = self.mqtt_on_state_payload_raw
-            off_state_raw = self.mqtt_off_state_payload_raw
-            on_state_json = self.mqtt_on_state_payload_json
-            off_state_json = self.mqtt_off_state_payload_json
-
-            processed_payload_value = payload_str.lower() # Start with raw string lowercased
-
-            # First, try direct raw string matching (case-insensitive)
-            if processed_payload_value == on_state_raw.lower():
-                new_state = 1
-            elif processed_payload_value == off_state_raw.lower():
-                new_state = 0
+            try:
+                incoming_json = json.loads(payload_str)
+                if self.mqtt_on_state_payload_json:
+                    on_attr, on_val = list(self.mqtt_on_state_payload_json.items())[0]
+                    extracted_on_value = get_json_attribute(incoming_json, on_attr)
+                    if extracted_on_value is not None and str(extracted_on_value).lower() == str(on_val).lower():
+                        new_state = 1
+                if new_state is None and self.mqtt_off_state_payload_json:
+                    off_attr, off_val = list(self.mqtt_off_state_payload_json.items())[0]
+                    extracted_off_value = get_json_attribute(incoming_json, off_attr)
+                    if extracted_off_value is not None and str(extracted_off_value).lower() == str(off_val).lower():
+                        new_state = 0
+                if new_state is None: # Fallback if JSON key/value not matched, try value in JSON as string
+                    processed_payload_value = str(incoming_json.get("value", payload_str)).lower()
+            except json.JSONDecodeError:
+                # If not JSON, process as raw string
+                processed_payload_value = payload_str.lower()
             
-            # If state not determined by raw string, try JSON parsing
-            if new_state is None:
-                try:
-                    incoming_json = json.loads(payload_str)
-                    
-                    # Try matching a single-key JSON object
-                    if on_state_json:
-                        on_attr, on_val = list(on_state_json.items())[0]
-                        extracted_on_value = get_json_attribute(incoming_json, on_attr)
-                        if extracted_on_value is not None and str(extracted_on_value).lower() == str(on_val).lower():
-                            new_state = 1
-                    
-                    if new_state is None and off_state_json:
-                        off_attr, off_val = list(off_state_json.items())[0]
-                        extracted_off_value = get_json_attribute(incoming_json, off_attr)
-                        if extracted_off_value is not None and str(extracted_off_value).lower() == str(off_val).lower():
-                            new_state = 0
-                    
-                    # Fallback for JSON: check "value" key or use entire JSON string representation
-                    if new_state is None:
-                        if "value" in incoming_json:
-                            json_value_str = str(incoming_json["value"]).lower()
-                            if json_value_str == on_state_raw.lower(): # Compare against raw payloads
-                                new_state = 1
-                            elif json_value_str == off_state_raw.lower(): # Compare against raw payloads
-                                new_state = 0
-                        
-                except json.JSONDecodeError:
-                    # Not a JSON, and raw string match already failed.
-                    pass
+            if new_state is None: # If not determined by JSON parsing, try raw string matching
+                if processed_payload_value == self.mqtt_on_state_payload_raw.lower():
+                    new_state = 1
+                elif processed_payload_value == self.mqtt_off_state_payload_raw.lower():
+                    new_state = 0
+                else:
+                    logger.warning(f"DbusSwitch: Unrecognized payload '{payload_str}' for topic '{topic}'. Expected '{self.mqtt_on_state_payload_raw}' or '{self.mqtt_off_state_payload_raw}'.")
+                    return # Exit if state not determined
 
-            if new_state is None:
-                logger.warning(f"DbusSwitch: Unrecognized payload '{payload_str}' for topic '{topic}'. Expected '{on_state_raw}' or '{off_state_raw}' (or JSON equivalent).")
-                return # Exit if state not determined
-
-            # dbus_path is already determined from topic
-            if self[dbus_path] != new_state:
+            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
+            if dbus_path and self[dbus_path] != new_state:
                 logger.debug(f"DbusSwitch: Updating D-Bus path '{dbus_path}' to {new_state} for '{self['/CustomName']}'.")
                 GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, new_state)
             elif dbus_path:
@@ -207,7 +175,7 @@ class DbusSwitch(VeDbusService):
 
         except Exception as e:
             logger.error(f"Error processing MQTT message for DbusSwitch {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc()
+            traceback.print_exc() # Print full traceback for errors
 
     def handle_dbus_change(self, path, value):
         # Determine the correct section name for saving config
@@ -264,10 +232,9 @@ class DbusSwitch(VeDbusService):
         if not self.mqtt_client or not self.mqtt_client.is_connected():
             logger.warning(f"MQTT client not connected, cannot publish command for {self.service_name}.")
             return
-        if not self.dbus_path_to_command_topic_map or path not in self.dbus_path_to_command_topic_map:
+        if path not in self.dbus_path_to_command_topic_map:
             logger.warning(f"No command topic mapped for D-Bus path '{path}' in {self.service_name}.")
             return
-        
         try:
             command_topic = self.dbus_path_to_command_topic_map[path]
             mqtt_payload = self.mqtt_on_command_payload if value == 1 else self.mqtt_off_command_payload
@@ -1139,11 +1106,10 @@ def main():
                     # This branch is now ONLY for Relay_Module_X sections (multi-output switch modules)
                     output_configs = []
                     
-                    # Read module-level payloads from the Relay_Module_X section
-                    mqtt_on_state = device_config.get('mqtt_on_state_payload', '1')
-                    mqtt_off_state = device_config.get('mqtt_off_state_payload', '0')
-                    mqtt_on_cmd = device_config.get('mqtt_on_command_payload', '1')
-                    mqtt_off_cmd = device_config.get('mqtt_off_command_payload', '0')
+                    mqtt_on_state = device_config.get('MqttOnStatePayload', '1')
+                    mqtt_off_state = device_config.get('MqttOffStatePayload', '0')
+                    mqtt_on_cmd = device_config.get('MqttOnCommandPayload', '1')
+                    mqtt_off_cmd = device_config.get('MqttOffCommandPayload', '0')
 
                     num_switches = device_config.getint('NumberOfSwitches', 1)
                     for j in range(1, num_switches + 1):
@@ -1162,6 +1128,7 @@ def main():
                             logger.warning(f"Expected switch output section '{output_section_name}' for Relay_Module_{device_index} not found. Skipping this output.")
                         output_configs.append(output_data)
                     
+                    # The service name for a Relay_Module is based on its serial.
                     service = device_class(service_name, device_config, output_configs, serial_number, mqtt_client,
                                         mqtt_on_state, mqtt_off_state, mqtt_on_cmd, mqtt_off_cmd, device_bus)
                 else: # For all other device types (DigitalInput, TempSensor, TankSensor, Battery)
