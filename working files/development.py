@@ -1,1192 +1,1150 @@
 #!/usr/bin/env python3
-
-from gi.repository import GLib
-import logging
-import sys
+import configparser
 import os
 import random
-import configparser
-import time
+import subprocess
 import paho.mqtt.client as mqtt
-import threading
-import json
-import re # Import regex module
-import dbus.bus # Explicitly import dbus.bus for BusConnection
-import traceback # Import traceback for detailed error logging
-
-logger = logging.getLogger()
-
-for handler in logger.handlers[:]:
-    logger.removeHandler(handler)
-
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(formatter)
-
-logger.addHandler(console_handler)
-logger.setLevel(logging.DEBUG) # Default to DEBUG for better visibility
-
-CONFIG_FILE_PATH = '/data/setupOptions/external-devices/optionsSet'
-
-try:
-    sys.path.insert(1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
-    from vedbus import VeDbusService
-except ImportError:
-    logger.critical("Cannot find vedbus library. Please ensure it's in the correct path.")
-    sys.exit(1)
-
-def get_json_attribute(data, path):
-    parts = path.split('.')
-    current = data
-    for part in parts:
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        else:
-            return None
-    return current
-
-# ====================================================================
-# DbusSwitch Class
-# ====================================================================
-class DbusSwitch(VeDbusService):
-    def __init__(self, service_name, device_config, output_configs, serial_number, mqtt_client,
-                 mqtt_on_state_payload, mqtt_off_state_payload, mqtt_on_command_payload, mqtt_off_command_payload, bus):
-        # Pass the bus instance to the parent constructor
-        super().__init__(service_name, bus=bus, register=False) 
-
-        self.service_name = service_name # Store service_name for logging
-        self.device_config = device_config
-        self.device_index = device_config.getint('DeviceIndex') # This 'DeviceIndex' now comes from either Relay_Module_X or switch_X_Y
-        self.mqtt_on_state_payload_raw = mqtt_on_state_payload
-        self.mqtt_off_state_payload_raw = mqtt_off_state_payload
-        self.mqtt_on_command_payload = mqtt_on_command_payload
-        self.mqtt_off_command_payload = mqtt_off_command_payload
-        self.mqtt_on_state_payload_json = None
-        self.mqtt_off_state_payload_json = None
-
-        try:
-            parsed_on = json.loads(mqtt_on_state_payload)
-            if isinstance(parsed_on, dict) and len(parsed_on) == 1:
-                self.mqtt_on_state_payload_json = parsed_on
-        except json.JSONDecodeError:
-            pass
-
-        try:
-            # Fix: Use mqtt_off_state_payload instead of undefined mqtt_off_payload
-            parsed_off = json.loads(mqtt_off_state_payload)
-            if isinstance(parsed_off, dict) and len(parsed_off) == 1:
-                self.mqtt_off_state_payload_json = parsed_off
-        except json.JSONDecodeError:
-            pass
-
-        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.19')
-        self.add_path('/Mgmt/Connection', 'Virtual')
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
-        self.add_path('/ProductId', 49257)
-        self.add_path('/ProductName', 'Virtual switch')
-        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Serial', serial_number)
-        self.add_path('/State', 256)
-        self.add_path('/FirmwareVersion', 0)
-        self.add_path('/HardwareVersion', 0)
-        self.add_path('/Connected', 1)
-
-        # Use the global MQTT client passed in
-        self.mqtt_client = mqtt_client
-
-        self.dbus_path_to_state_topic_map = {}
-        self.dbus_path_to_command_topic_map = {}
-
-        for output_data in output_configs:
-            self.add_output(output_data)
-
-        self.register() # Register all D-Bus paths at once
-        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
-
-        # Now, after registration, add specific MQTT callbacks and subscribe
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic)
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {topic}")
-
-    def add_output(self, output_data):
-        # Construct the output prefix for D-Bus paths
-        output_prefix = f'/SwitchableOutput/output_{output_data["index"]}'
-        state_topic = output_data.get('MqttStateTopic')
-        command_topic = output_data.get('MqttCommandTopic')
-        dbus_state_path = f'{output_prefix}/State'
-
-        if state_topic and 'path/to/mqtt' not in state_topic and command_topic and 'path/to/mqtt' not in command_topic:
-            self.dbus_path_to_state_topic_map[dbus_state_path] = state_topic
-            self.dbus_path_to_command_topic_map[dbus_state_path] = command_topic
-            # DO NOT SUBSCRIBE OR ADD CALLBACK HERE YET
-            # The subscription and callback addition is moved to __init__ after self.register()
-        else:
-            logger.warning(f"MQTT topics for {dbus_state_path} in DbusSwitch are invalid. Ignoring.")
-
-        self.add_path(f'{output_prefix}/Name', output_data['name'])
-        self.add_path(f'{output_prefix}/Status', 0)
-        self.add_path(dbus_state_path, 0, writeable=True, onchangecallback=self.handle_dbus_change)
-        settings_prefix = f'{output_prefix}/Settings'
-        self.add_path(f'{settings_prefix}/CustomName', output_data['custom_name'], writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path(f'{settings_prefix}/Group', output_data['group'], writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path(f'{settings_prefix}/Type', 1, writeable=True)
-        self.add_path(f'{settings_prefix}/ValidTypes', 7)
-
-    def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusSwitch specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
-        try:
-            payload_str = msg.payload.decode().strip()
-            topic = msg.topic
-            new_state = None
-            try:
-                incoming_json = json.loads(payload_str)
-                if self.mqtt_on_state_payload_json:
-                    on_attr, on_val = list(self.mqtt_on_state_payload_json.items())[0]
-                    extracted_on_value = get_json_attribute(incoming_json, on_attr)
-                    if extracted_on_value is not None and str(extracted_on_value).lower() == str(on_val).lower():
-                        new_state = 1
-                if new_state is None and self.mqtt_off_state_payload_json:
-                    off_attr, off_val = list(self.mqtt_off_state_payload_json.items())[0]
-                    extracted_off_value = get_json_attribute(incoming_json, off_attr)
-                    if extracted_off_value is not None and str(extracted_off_value).lower() == str(off_val).lower():
-                        new_state = 0
-                if new_state is None: # Fallback if JSON key/value not matched, try value in JSON as string
-                    processed_payload_value = str(incoming_json.get("value", payload_str)).lower()
-            except json.JSONDecodeError:
-                # If not JSON, process as raw string
-                processed_payload_value = payload_str.lower()
-            
-            if new_state is None: # If not determined by JSON parsing, try raw string matching
-                if processed_payload_value == self.mqtt_on_state_payload_raw.lower():
-                    new_state = 1
-                elif processed_payload_value == self.mqtt_off_state_payload_raw.lower():
-                    new_state = 0
-                else:
-                    logger.warning(f"DbusSwitch: Unrecognized payload '{payload_str}' for topic '{topic}'. Expected '{self.mqtt_on_state_payload_raw}' or '{self.mqtt_off_state_payload_raw}'.")
-                    return # Exit if state not determined
-
-            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
-            if dbus_path and self[dbus_path] != new_state:
-                logger.debug(f"DbusSwitch: Updating D-Bus path '{dbus_path}' to {new_state} for '{self['/CustomName']}'.")
-                GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, new_state)
-            elif dbus_path:
-                logger.debug(f"DbusSwitch: D-Bus path '{dbus_path}' already {new_state}. No update needed.")
-
-        except Exception as e:
-            logger.error(f"Error processing MQTT message for DbusSwitch {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc() # Print full traceback for errors
-
-    def handle_dbus_change(self, path, value):
-        # Determine the correct section name for saving config
-        if "/SwitchableOutput/output_" in path:
-            try:
-                # Extract output index from path (e.g., /SwitchableOutput/output_1/State -> 1)
-                match = re.search(r'/output_(\d+)/', path)
-                output_index = match.group(1) if match else None
-                if output_index is None:
-                    logger.error(f"Failed to parse output index from D-Bus path: {path}")
-                    return False
-
-                # This instance represents a Relay_Module, saving to its child switch_X_Y section
-                parent_device_index = self.device_config.get('DeviceIndex') # From Relay_Module_X
-                section_name = f'switch_{parent_device_index}_{output_index}'
-                
-                key_name = path.split('/')[-1]
-
-                if "/State" in path:
-                    if value in [0, 1]:
-                        self.publish_mqtt_command(path, value)
-                        # State is not saved to optionsSet normally, it's dynamic
-                        return True
-                    return False
-                elif "/Settings" in path:
-                    self.save_config_change(section_name, key_name, value)
-                    return True
-            except Exception as e:
-                logger.error(f"Error handling D-Bus change for switch output {path}: {e}")
-                traceback.print_exc()
-                return False
-        elif path == '/CustomName':
-            # This handles the CustomName of the main DbusSwitch service itself (the Relay_Module)
-            # The section name to save to is the one that created this service.
-            self.save_config_change(self.device_config.name, 'CustomName', value)
-            return True
-        return False
-
-    def save_config_change(self, section, key, value):
-        config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE_PATH)
-            if not config.has_section(section):
-                config.add_section(section)
-            config.set(section, key, str(value))
-            with open(CONFIG_FILE_PATH, 'w') as configfile:
-                config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
-        except Exception as e:
-            logger.error(f"Failed to save config file changes for key '{key}': {e}")
-            traceback.print_exc()
-
-    def publish_mqtt_command(self, path, value):
-        if not self.mqtt_client or not self.mqtt_client.is_connected():
-            logger.warning(f"MQTT client not connected, cannot publish command for {self.service_name}.")
-            return
-        if path not in self.dbus_path_to_command_topic_map:
-            logger.warning(f"No command topic mapped for D-Bus path '{path}' in {self.service_name}.")
-            return
-        try:
-            command_topic = self.dbus_path_to_command_topic_map[path]
-            mqtt_payload = self.mqtt_on_command_payload if value == 1 else self.mqtt_off_command_payload
-            self.mqtt_client.publish(command_topic, mqtt_payload, retain=False)
-            logger.debug(f"Published MQTT command '{mqtt_payload}' to topic '{command_topic}' for {self.service_name}.")
-        except Exception as e:
-            logger.error(f"Error during MQTT publish for {self.service_name}: {e}")
-            traceback.print_exc()
-
-    def update_dbus_from_mqtt(self, path, value):
-        try:
-            if self[path] != value:
-                self[path] = value
-                logger.debug(f"DbusSwitch: D-Bus path '{path}' updated to {value}.")
-        except Exception as e:
-            logger.error(f"Error updating D-Bus path '{path}' in DbusSwitch: {e}")
-            traceback.print_exc()
-        return False # Run only once
-
-# ====================================================================
-# DbusDigitalInput Class
-# ====================================================================
-class DbusDigitalInput(VeDbusService):
-    # Added mapping for text to integer conversion
-    DIGITAL_INPUT_TYPES = {
-        'disabled': 0,
-        'pulse meter': 1,
-        'door alarm': 2,
-        'bilge pump': 3,
-        'bilge alarm': 4,
-        'burglar alarm': 5,
-        'smoke alarm': 6,
-        'fire alarm': 7,
-        'co2 alarm': 8,
-        'generator': 9,
-        'touch input control': 10,
-        'generic': 3 # Default if not specified or unrecognized
-    }
-
-    def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
-        # Pass the bus instance to the parent constructor
-        super().__init__(service_name, bus=bus, register=False)
-
-        self.device_config = device_config
-        # The section name itself (e.g., 'input_1_1') is used for saving
-        self.config_section_name = device_config.name 
-        self.service_name = service_name # Store service_name for logging
-
-        # General device settings
-        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.19')
-        self.add_path('/Mgmt/Connection', 'Virtual')
-        
-        # Paths from config
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
-        self.add_path('/ProductId', 41318) # From user example
-        self.add_path('/ProductName', 'Virtual digital input')
-        self.add_path('/Serial', serial_number)
-
-        # Writable paths with callbacks
-        self.add_path('/CustomName', self.device_config.get('CustomName', 'Digital Input'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Count', self.device_config.getint('Count', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        
-        # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
-        self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
-        
-        # Settings paths
-        self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        # Added new D-Bus paths for InvertAlarm and AlarmSetting
-        self.add_path('/Settings/InvertAlarm', self.device_config.getint('InvertAlarm', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Settings/AlarmSetting', self.device_config.getint('AlarmSetting', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-
-        # Read-only paths updated by the service
-        self.add_path('/Connected', 1)
-        self.add_path('/InputState', 0)
-        self.add_path('/Alarm', 0)
-
-        # Use the global MQTT client passed in
-        self.mqtt_client = mqtt_client
-
-        self.mqtt_state_topic = self.device_config.get('MqttStateTopic')
-        self.mqtt_on_payload = self.device_config.get('mqtt_on_state_payload', 'ON')
-        self.mqtt_off_payload = self.device_config.get('mqtt_off_state_payload', 'OFF')
-
-        self.register() # Register D-Bus paths before subscribing to MQTT
-
-        # Add this device's specific message callback to the global client after D-Bus registration
-        if self.mqtt_state_topic and 'path/to/mqtt' not in self.mqtt_state_topic:
-            self.mqtt_client.message_callback_add(self.mqtt_state_topic, self.on_mqtt_message_specific)
-            self.mqtt_client.subscribe(self.mqtt_state_topic) # Explicitly subscribe here
-            logger.debug(f"Added specific MQTT callback and subscribed for DbusDigitalInput '{self['/CustomName']}' on topic: {self.mqtt_state_topic}")
-        else:
-            logger.warning(f"No valid MqttStateTopic for '{self['/CustomName']}'. State will not update from MQTT.")
-
-        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
-
-    # Specific message handler for this digital input
-    def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusDigitalInput specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
-        
-        if msg.topic != self.mqtt_state_topic:
-            logger.debug(f"DbusDigitalInput: Received message on non-matching topic '{msg.topic}'. Expected '{self.mqtt_state_topic}'.")
-            return
-        
-        try:
-            payload_str = msg.payload.decode().strip()
-            logger.debug(f"DbusDigitalInput: Received MQTT message on topic '{msg.topic}': {payload_str}")
-
-            raw_state = None
-            if payload_str.lower() == self.mqtt_on_payload.lower():
-                raw_state = 1
-            elif payload_str.lower() == self.mqtt_off_payload.lower():
-                raw_state = 0
-            
-            if raw_state is None:
-                logger.warning(f"DbusDigitalInput: Invalid MQTT payload '{payload_str}' received for '{self['/CustomName']}'. Expected '{self.mqtt_on_payload}' or '{self.mqtt_off_payload}'.")
-                return
-
-            # InputState always reflects the actual (raw) state
-            if self['/InputState'] != raw_state:
-                logger.debug(f"DbusDigitalInput: Updating /InputState for '{self['/CustomName']}' to {raw_state}")
-                GLib.idle_add(self.update_dbus_input_state, raw_state)
-
-            # Apply inversion for the main State D-Bus path
-            invert = self['/Settings/InvertTranslation']
-            final_state = (1 - raw_state) if invert == 1 else raw_state
-
-            # Get the D-Bus State value based on the Type setting
-            dbus_state = self._get_dbus_state_for_type(final_state)
-
-            # Schedule D-Bus update for the main State in main thread
-            if self['/State'] != dbus_state:
-                logger.debug(f"DbusDigitalInput: Updating /State for '{self['/CustomName']}' to {dbus_state}")
-                GLib.idle_add(self.update_dbus_state, dbus_state)
-
-        except Exception as e:
-            logger.error(f"Error processing MQTT message for Digital Input {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc()
-
-    def _get_dbus_state_for_type(self, logical_state):
-        """
-        Maps the logical state (0 or 1) to the specific D-Bus State value
-        based on the currently configured Type.
-        """
-        current_type = self['/Type']
-        
-        if current_type == 2:  # 'door alarm'
-            return 7 if logical_state == 1 else 6  # 7=alarm, 6=normal
-        elif current_type == 3: # 'bilge pump' or 'generic'
-            return 3 if logical_state == 1 else 2  # 3=on, 2=off
-        elif 4 <= current_type <= 8: # bilge alarm, burglar alarm, smoke alarm, fire alarm, co2 alarm
-            return 9 if logical_state == 1 else 8  # 9=alarm, 8=normal
-        
-        # For other types (disabled, pulse meter, generator, touch input control, or unmapped),
-        # return the logical state directly (0 or 1)
-        return logical_state
-
-    def update_dbus_input_state(self, new_raw_state):
-        self['/InputState'] = new_raw_state
-        return False # Run only once
-
-    def update_dbus_state(self, new_state_value):
-        self['/State'] = new_state_value
-        return False # Run only once
-
-    def handle_dbus_change(self, path, value):
-        try:
-            key_name = path.split('/')[-1]
-            logger.debug(f"D-Bus settings change triggered for {path} with value '{value}'. Saving to config file.")
-            
-            value_to_save = value
-            if path == '/Type':
-                value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'generic')
-            
-            # Special handling for Alarm settings as they are under /Settings
-            if path.startswith('/Settings/'):
-                self.save_config_change(self.config_section_name, key_name, value)
-                if path == '/Settings/InvertTranslation':
-                    # Recalculate and update /State immediately when InvertTranslation changes
-                    current_raw_state = self['/InputState']
-                    new_invert_setting = value # 'value' is the new InvertTranslation setting (0 or 1)
-                    final_state_after_inversion = (1 - current_raw_state) if new_invert_setting == 1 else current_raw_state
-                    new_dbus_state_value = self._get_dbus_state_for_type(final_state_after_inversion)
-                    GLib.idle_add(self.update_dbus_state, new_dbus_state_value)
-            else: # For paths directly under the device root (CustomName, Count, State, Type)
-                self.save_config_change(self.config_section_name, key_name, value_to_save)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to handle D-Bus change for {path}: {e}")
-            traceback.print_exc()
-            return False
-
-    def save_config_change(self, section, key, value):
-        config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE_PATH)
-            if not config.has_section(section):
-                config.add_section(section)
-            config.set(section, key, str(value))
-            with open(CONFIG_FILE_PATH, 'w') as configfile:
-                config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
-        except Exception as e:
-            logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
-            traceback.print_exc()
-
-# ====================================================================
-# DbusTempSensor Class
-# ====================================================================
-class DbusTempSensor(VeDbusService):
-    TEMPERATURE_TYPES = {
-        'battery': 0,
-        'fridge': 1,
-        'generic': 2,
-        'room': 3,
-        'outdoor': 4,
-        'water heater': 5,
-        'freezer': 6
-    }
-
-    def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
-        # Pass the bus instance to the parent constructor
-        super().__init__(service_name, bus=bus, register=False)
-
-        self.device_config = device_config
-        self.device_index = device_config.getint('DeviceIndex')
-        self.service_name = service_name # Store service_name for logging
-
-        # General device settings
-        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.19')
-        self.add_path('/Mgmt/Connection', 'Virtual')
-        
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
-        self.add_path('/ProductId', 49248) # Product ID for virtual temperature sensor
-        self.add_path('/ProductName', 'Virtual temperature') # Fixed product name
-        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Serial', serial_number)
-        
-        self.add_path('/Status', 0) # 0 for OK
-        self.add_path('/Connected', 1) # 1 for connected
-
-        # Temperature specific paths
-        self.add_path('/Temperature', 0.0) # Initial temperature
-        self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
-        self.add_path('/Humidity', 0.0) # Initial Humidity
-
-        # TemperatureType mapping and D-Bus path
-        initial_type_str = self.device_config.get('Type', 'generic').lower()
-        initial_type_int = self.TEMPERATURE_TYPES.get(initial_type_str, self.TEMPERATURE_TYPES['generic'])
-        self.add_path('/TemperatureType', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
-
-        # Use the global MQTT client passed in
-        self.mqtt_client = mqtt_client
-        
-        self.dbus_path_to_state_topic_map = {
-            '/Temperature': self.device_config.get('TemperatureStateTopic'),
-            '/Humidity': self.device_config.get('HumidityStateTopic'),
-            '/BatteryVoltage': self.device_config.get('BatteryStateTopic')
-        }
-
-        # Remove None, empty, or 'path/to/mqtt' values from the map
-        self.dbus_path_to_state_topic_map = {
-            k: v for k, v in self.dbus_path_to_state_topic_map.items()
-            if v is not None and v != '' and 'path/to/mqtt' not in v
-        }
-
-        self.register() # Register D-Bus paths before subscribing to MQTT
-
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic: # double check validity
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTempSensor '{self['/CustomName']}' on topic: {topic}")
-
-
-        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
-
-    # Specific message handler for this temp sensor
-    def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusTempSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
-        try:
-            payload_str = msg.payload.decode().strip()
-            topic = msg.topic
-            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
-            
-            if not dbus_path:
-                logger.debug(f"DbusTempSensor: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
-                return
-
-            value = None
-            try:
-                incoming_json = json.loads(payload_str)
-                if isinstance(incoming_json, dict) and "value" in incoming_json:
-                    value = float(incoming_json["value"])
-                else:
-                    logger.warning(f"DbusTempSensor: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
-                    return
-            except json.JSONDecodeError:
-                try:
-                    value = float(payload_str)
-                except ValueError:
-                    logger.warning(f"DbusTempSensor: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
-                    return
-            
-            if value is None: 
-                logger.warning(f"DbusTempSensor: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
-                return
-            
-            if self[dbus_path] != value:
-                logger.debug(f"DbusTempSensor: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
-                GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
-            else:
-                logger.debug(f"DbusTempSensor: D-Bus path '{dbus_path}' already {value}. No update needed.")
-
-        except Exception as e:
-            logger.error(f"Error processing MQTT message for TempSensor {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc()
-            
-    def handle_dbus_change(self, path, value):
-        section_name = f'Temp_Sensor_{self.device_index}'
-        if path == '/CustomName':
-            self.save_config_change(section_name, 'CustomName', value)
-            return True
-        elif path == '/TemperatureType':
-            type_str = next((k for k, v in self.TEMPERATURE_TYPES.items() if v == value), 'generic')
-            self.save_config_change(section_name, 'Type', type_str)
-            return True
-        return False
-
-    def save_config_change(self, section, key, value):
-        config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE_PATH)
-            if not config.has_section(section):
-                config.add_section(section)
-            config.set(section, key, str(value))
-            with open(CONFIG_FILE_PATH, 'w') as configfile:
-                config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
-        except Exception as e:
-            logger.error(f"Failed to save config file changes for TempSensor key '{key}': {e}")
-            traceback.print_exc()
-
-    def update_dbus_from_mqtt(self, path, value):
-        self[path] = value
-        return False
-
-# ====================================================================
-# DbusTankSensor Class
-# ====================================================================
-class DbusTankSensor(VeDbusService):
-    FLUID_TYPES = {
-        'fuel': 0, 'fresh water': 1, 'waste water': 2, 'live well': 3, 'oil': 4,
-        'black water': 5, 'gasoline': 6, 'diesel': 7, 'lpg': 8, 'lng': 9,
-        'hydraulic oil': 10, 'raw water': 11
-    }
-
-    def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
-        # Pass the bus instance to the parent constructor
-        super().__init__(service_name, bus=bus, register=False)
-        self.device_config = device_config
-        self.device_index = device_config.getint('DeviceIndex')
-        self.service_name = service_name # Store service_name for logging
-
-        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.19')
-        self.add_path('/Mgmt/Connection', 'Virtual')
-        
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
-        self.add_path('/ProductId', 49251)
-        self.add_path('/ProductName', 'Virtual tank')
-        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Serial', serial_number)
-        
-        self.add_path('/Status', 0)
-        self.add_path('/Connected', 1)
-
-        self.add_path('/Capacity', self.device_config.getfloat('Capacity', 0.2), writeable=True, onchangecallback=self.handle_dbus_change)
-        
-        initial_fluid_type_str = self.device_config.get('FluidType', 'fresh water').lower()
-        initial_fluid_type_int = self.FLUID_TYPES.get(initial_fluid_type_str, self.FLUID_TYPES['fresh water'])
-        self.add_path('/FluidType', initial_fluid_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
-        
-        self.add_path('/Level', 0.0)
-        self.add_path('/Remaining', 0.0)
-        self.add_path('/RawValue', 0.0)
-        self.add_path('/RawValueEmpty', self.device_config.getfloat('RawValueEmpty', 0.0), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/RawValueFull', self.device_config.getfloat('RawValueFull', 0.0), writeable=True, onchangecallback=self.handle_dbus_change)
-        
-        # Other paths not yet implemented via MQTT
-        self.add_path('/RawUnit', self.device_config.get('RawUnit', ''))
-        self.add_path('/Shape', 0)
-        self.add_path('/Temperature', 0.0)
-        self.add_path('/BatteryVoltage', 0.0)
-
-        # Use the global MQTT client passed in
-        self.mqtt_client = mqtt_client
-
-        self.dbus_path_to_state_topic_map = {}
-        self.is_level_direct = False
-
-        def is_valid_topic(topic):
-            return topic and 'path/to/mqtt' not in topic
-
-        level_topic = self.device_config.get('LevelStateTopic')
-        raw_topic = self.device_config.get('RawValueStateTopic')
-
-        if is_valid_topic(raw_topic):
-            self.dbus_path_to_state_topic_map['/RawValue'] = raw_topic
-            logger.debug(f"Tank '{self['/CustomName']}' will use RawValue topic: {raw_topic}")
-        elif is_valid_topic(level_topic):
-            self.is_level_direct = True
-            self.dbus_path_to_state_topic_map['/Level'] = level_topic
-            logger.debug(f"Tank '{self['/CustomName']}' will use direct Level topic: {level_topic}")
-        else:
-            logger.warning(f"Tank '{self['/CustomName']}': Neither RawValueStateTopic nor LevelStateTopic are valid. Tank level will not update from MQTT.")
-        
-        # Add other topics if they exist
-        if is_valid_topic(self.device_config.get('TemperatureStateTopic')):
-            self.dbus_path_to_state_topic_map['/Temperature'] = self.device_config.get('TemperatureStateTopic')
-            logger.debug(f"Tank '{self['/CustomName']}' also subscribing to Temperature topic: {self.device_config.get('TemperatureStateTopic')}")
-        if is_valid_topic(self.device_config.get('BatteryStateTopic')):
-            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
-            logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
-
-        self.register() # Register D-Bus paths before subscribing to MQTT
-
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic: # double check validity
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTankSensor '{self['/CustomName']}' on topic: {topic}")
-
-
-        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.") 
-
-        # Initial calculations
-        if not self.is_level_direct:
-            self._calculate_level_from_raw_value()
-        self._calculate_remaining_from_level()
-
-    # Specific message handler for this tank sensor
-    def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusTankSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
-        try:
-            payload_str = msg.payload.decode().strip()
-            topic = msg.topic
-            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
-            if not dbus_path: 
-                logger.debug(f"DbusTankSensor: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
-                return
-
-            value = None
-            try:
-                incoming_json = json.loads(payload_str)
-                if isinstance(incoming_json, dict) and "value" in incoming_json:
-                    value = float(incoming_json["value"])
-                else:
-                    logger.warning(f"DbusTankSensor: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
-                    return
-            except json.JSONDecodeError:
-                try: value = float(payload_str)
-                except ValueError: 
-                    logger.warning(f"DbusTankSensor: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
-                    return
-            
-            if value is None: 
-                logger.warning(f"DbusTankSensor: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
-                return
-            
-            if dbus_path == '/RawValue' and not self.is_level_direct:
-                if self['/RawValue'] != value:
-                    logger.debug(f"DbusTankSensor: Updating /RawValue to {value} and recalculating for '{self['/CustomName']}'.")
-                    GLib.idle_add(self._update_raw_value_and_recalculate, value)
-                else:
-                    logger.debug(f"DbusTankSensor: /RawValue already {value}. No update needed.")
-            elif dbus_path == '/Level' and self.is_level_direct:
-                if 0.0 <= value <= 100.0 and self['/Level'] != round(value, 2):
-                    logger.debug(f"DbusTankSensor: Updating /Level to {value} and recalculating for '{self['/CustomName']}'.")
-                    GLib.idle_add(self._update_level_and_recalculate, value)
-                else:
-                    logger.debug(f"DbusTankSensor: /Level already {value} or value out of range. No update needed.")
-            else: # For /Temperature or /BatteryVoltage
-                if self[dbus_path] != value:
-                    logger.debug(f"DbusTankSensor: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
-                    GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
-                else:
-                    logger.debug(f"DbusTankSensor: D-Bus path '{dbus_path}' already {value}. No update needed.")
-
-        except Exception as e:
-            logger.error(f"Error processing MQTT message for Tank {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc()
-
-    def _update_raw_value_and_recalculate(self, raw_value):
-        self['/RawValue'] = raw_value
-        self._calculate_level_from_raw_value()
-        self._calculate_remaining_from_level()
-        return False
-
-    def _update_level_and_recalculate(self, level_value):
-        if 0.0 <= level_value <= 100.0:
-            self['/Level'] = round(level_value, 2)
-            self._calculate_remaining_from_level()
-        return False
-
-    def _calculate_level_from_raw_value(self):
-        raw_value = self['/RawValue']
-        raw_empty = self['/RawValueEmpty']
-        raw_full = self['/RawValueFull']
-        level = 0.0
-        if raw_full != raw_empty:
-            level = ((raw_value - raw_empty) / (raw_full - raw_empty)) * 100.0
-            level = max(0.0, min(100.0, level))
-        self['/Level'] = round(level, 2)
-        logger.debug(f"Tank '{self['/CustomName']}' calculated Level: {self['/Level']}")
-
-    def _calculate_remaining_from_level(self):
-        remaining = (self['/Level'] / 100.0) * self['/Capacity']
-        self['/Remaining'] = round(remaining, 2)
-        logger.debug(f"Tank '{self['/CustomName']}' calculated Remaining: {self['/Remaining']}")
-
-
-    def handle_dbus_change(self, path, value):
-        section_name = f'Tank_Sensor_{self.device_index}'
-        key_name = path.split('/')[-1]
-        
-        value_to_save = value
-        if key_name == 'FluidType':
-            # Convert integer back to string for saving to config
-            value_to_save = next((k for k, v in self.FLUID_TYPES.items() if v == value), 'fresh water')
-            logger.debug(f"Tank: Converting FluidType {value} to string '{value_to_save}' for saving.")
-
-        self.save_config_change(section_name, key_name, value_to_save)
-
-        if path in ['/RawValueEmpty', '/RawValueFull'] and not self.is_level_direct:
-            GLib.idle_add(self._calculate_level_from_raw_value)
-            GLib.idle_add(self._calculate_remaining_from_level)
-        elif path == '/Capacity': # Capacity also affects Remaining
-            GLib.idle_add(self._calculate_remaining_from_level)
-        
-        return True
-
-    def save_config_change(self, section, key, value):
-        config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE_PATH)
-            if not config.has_section(section): config.add_section(section)
-            config.set(section, key, str(value))
-            with open(CONFIG_FILE_PATH, 'w') as f:
-                config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
-        except Exception as e:
-            logger.error(f"Failed to save config change for Tank: {e}")
-            traceback.print_exc()
-
-    def update_dbus_from_mqtt(self, path, value):
-        self[path] = value
-        return False
-
-# ====================================================================
-# DbusBattery Class
-# ====================================================================
-class DbusBattery(VeDbusService):
-    def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
-        # Pass the bus instance to the parent constructor
-        super().__init__(service_name, bus=bus, register=False)
-        self.device_config = device_config
-        self.device_index = device_config.getint('DeviceIndex')
-        self.service_name = service_name # Store service_name for logging
-
-        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
-        self.add_path('/Mgmt/ProcessVersion', '0.1.19')
-        self.add_path('/Mgmt/Connection', 'Virtual')
-        
-        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
-        self.add_path('/ProductId', 49253)
-        self.add_path('/ProductName', 'Virtual battery')
-        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Serial', serial_number)
-        
-        self.add_path('/Connected', 1)
-        self.add_path('/Soc', 0.0)
-        self.add_path('/Soh', 100.0)
-        self.add_path('/Capacity', self.device_config.getfloat('CapacityAh'), writeable=True, onchangecallback=self.handle_dbus_change)
-        self.add_path('/Dc/0/Current', 0.0)
-        self.add_path('/Dc/0/Power', 0.0)
-        self.add_path('/Dc/0/Temperature', 25.0)
-        self.add_path('/Dc/0/Voltage', 0.0)
-        
-        # Other paths
-        self.add_path('/ErrorCode', 0)
-        self.add_path('/Info/MaxChargeCurrent', None)
-        self.add_path('/Info/MaxDischargeCurrent', None)
-        self.add_path('/Info/MaxChargeVoltage', None)
-
-        # Use the global MQTT client passed in
-        self.mqtt_client = mqtt_client
-        
-        self.dbus_path_to_state_topic_map = {
-            '/Dc/0/Current': self.device_config.get('CurrentStateTopic'),
-            '/Dc/0/Power': self.device_config.get('PowerStateTopic'),
-            '/Dc/0/Temperature': self.device_config.get('TemperatureStateTopic'),
-            '/Dc/0/Voltage': self.device_config.get('VoltageStateTopic'),
-            '/Soc': self.device_config.get('SocStateTopic'),
-            '/Soh': self.device_config.get('SohStateTopic'),
-        }
-        self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
-        
-        self.register() # Register D-Bus paths before subscribing to MQTT
-
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusBattery '{self['/CustomName']}' on topic: {topic}")
-
-
-        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
-
-    # Specific message handler for this battery
-    def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusBattery specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
-        try:
-            payload_str = msg.payload.decode().strip()
-            topic = msg.topic
-            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
-            if not dbus_path: 
-                logger.debug(f"DbusBattery: Received message on non-matching topic '{msg.topic}'. Not mapped for this battery.")
-                return
-
-            value = None
-            try:
-                incoming_json = json.loads(payload_str)
-                if isinstance(incoming_json, dict) and "value" in incoming_json:
-                    value = incoming_json["value"]
-                else:
-                    logger.warning(f"DbusBattery: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
-                    return
-            except json.JSONDecodeError:
-                try: value = float(payload_str)
-                except ValueError: 
-                    logger.warning(f"DbusBattery: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
-                    return
-            
-            if value is None: 
-                logger.warning(f"DbusBattery: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
-                return
-            
-            if self[dbus_path] != value:
-                logger.debug(f"DbusBattery: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
-                GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
-            else:
-                logger.debug(f"DbusBattery: D-Bus path '{dbus_path}' already {value}. No update needed.")
-            
-        except Exception as e:
-            logger.error(f"Error processing MQTT message for Battery {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc()
-
-    def handle_dbus_change(self, path, value):
-        section_name = f'Virtual_Battery_{self.device_index}'
-        if path == '/CustomName':
-            self.save_config_change(section_name, 'CustomName', value)
-            return True
-        elif path == '/Capacity':
-            self.save_config_change(section_name, 'CapacityAh', value)
-            return True
-        return False
-
-    def save_config_change(self, section, key, value):
-        config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE_PATH)
-            if not config.has_section(section): config.add_section(section)
-            config.set(section, key, str(value))
-            with open(CONFIG_FILE_PATH, 'w') as f:
-                config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
-        except Exception as e:
-            logger.error(f"Failed to save config change for Battery: {e}")
-            traceback.print_exc()
-            
-    def update_dbus_from_mqtt(self, path, value):
-        self[path] = value
-        return False
-
-
-# ====================================================================
-# Global MQTT Callbacks
-# ====================================================================
-# --- Original Global MQTT Connect Callback (renamed for clarity) ---
-def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
-    if rc == 0:
-        logger.info("Connected to MQTT Broker!")
-        # Subscriptions are handled by individual service instances' message_callback_add
-        # or in the debug_on_connect if that's active.
+import time
+import re
+import logging
+import sys
+
+# Configure logging for this script itself
+logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Global variable to store discovered topics and device info
+discovered_modules_and_topics_global = {}
+
+# --- Existing functions (unchanged) ---
+def generate_serial():
+    """Generates a random 16-digit serial number."""
+    return ''.join([str(random.randint(0, 9)) for _ in range(16)])
+
+# --- MQTT Callbacks for Discovery ---
+def parse_mqtt_device_topic(topic):
+    """
+    Parses MQTT topics to extract device information (Dingtian or Shelly).
+    Returns (device_type, module_serial, component_type, component_id, full_topic_base)
+    or (None, None, None, None, None) if not a recognized device topic.
+
+    device_type: 'dingtian' or 'shelly'
+    module_serial: e.g., 'relay1a76f' or 'shellyplus1pm-08f9e0fe4034'
+    component_type: 'out', 'in' (for dingtian relays), 'relay' (for shelly), 'temperature', etc.
+    component_id: 'r1', '0' (for shelly relay 0), None for general device topics
+    full_topic_base: The base path for the device, e.g., 'dingtian/relay1a76f' or 'shellyplus1pm-08f9e0fe4034'
+    """
+    logger.debug(f"Attempting to parse topic: {topic}")
+
+    # NEW: Dingtian Input Regex: Flexible 'dingtian' path segment, then 'relay[alphanumeric]', then optional path, then 'out/i[digits]'
+    # User specified that 'out/ix' topics are for digital inputs.
+    dingtian_input_match = re.search(r'(?:^|.*/)([a-zA-Z0-9_-]*dingtian[a-zA-Z0-9_-]*)/(relay[a-zA-Z0-9]+)/(?:.*/)?out/i([0-9]+)$', topic)
+    if dingtian_input_match:
+        path_segment_with_dingtian = dingtian_input_match.group(1)
+        module_serial = dingtian_input_match.group(2)
+        full_topic_base = f"{path_segment_with_dingtian}/{module_serial}"
+        logger.debug(f"Matched Dingtian Input (out/iX): Type=dingtian, Serial={module_serial}, ComponentType=in, ComponentID={dingtian_input_match.group(3)}, Base={full_topic_base}")
+        return 'dingtian', module_serial, 'in', dingtian_input_match.group(3), full_topic_base
+
+
+    # Existing Dingtian Output/Input Regex: Flexible 'dingtian' path segment, then 'relay[alphanumeric]', then optional path, then 'out'|'in', then 'r[digits]'
+    dingtian_match = re.search(r'(?:^|.*/)([a-zA-Z0-9_-]*dingtian[a-zA-Z0-9_-]*)/(relay[a-zA-Z0-9]+)/(?:.*/)?(out|in)/r([0-9]+)$', topic)
+    if dingtian_match:
+        path_segment_with_dingtian = dingtian_match.group(1)
+        module_serial = dingtian_match.group(2)
+        full_topic_base = f"{path_segment_with_dingtian}/{module_serial}"
+        logger.debug(f"Matched Dingtian (out/in/rX): Type=dingtian, Serial={module_serial}, ComponentType={dingtian_match.group(3)}, ComponentID={dingtian_match.group(4)}, Base={full_topic_base}")
+        return 'dingtian', module_serial, dingtian_match.group(3), dingtian_match.group(4), full_topic_base
+
+    # Shelly Regex (Updated for broader path matching and case-insensitivity)
+    shelly_match = re.search(r'(?:^|.*/)(shelly[a-zA-Z0-9_-]+)(?:/.*)?/status/switch:([0-9]+)$', topic, re.IGNORECASE)
+    if shelly_match:
+        module_serial = shelly_match.group(1)
+        full_topic_base = module_serial
+        component_id = shelly_match.group(2)
+        component_type = 'relay'
+        logger.debug(f"Matched Shelly: Type=shelly, Serial={module_serial}, ComponentType={component_type}, ComponentID={component_id}, Base={full_topic_base}")
+        return 'shelly', module_serial, component_type, component_id, full_topic_base
+
+    logger.debug("No Dingtian or Shelly pattern matched.")
+    return None, None, None, None, None
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Connected to MQTT broker with result code {rc}")
+    client.subscribe("#")
+    print("Subscribed to '#' for device discovery, will filter for 'dingtian' or 'shelly' in topics.")
+
+def on_message(client, userdata, msg):
+    """Callback for when a PUBLISH message is received from the server."""
+    topic = msg.topic
+    logger.debug(f"Received MQTT message on topic: {topic}")
+    device_type, module_serial, component_type, component_id, full_topic_base = parse_mqtt_device_topic(topic)
+
+    if module_serial:
+        if module_serial not in discovered_modules_and_topics_global:
+            discovered_modules_and_topics_global[module_serial] = {
+                "device_type": device_type,
+                "topics": set(),
+                "base_topic_path": full_topic_base
+            }
+            logger.debug(f"Discovered new module: {device_type} with serial {module_serial}")
+        discovered_modules_and_topics_global[module_serial]["topics"].add(topic)
+        logger.debug(f"Added topic {topic} to module {module_serial}")
     else:
-        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
-        # Note: If connection fails, the paho client will attempt to reconnect by default.
-        # Consider more robust error handling / retry logic here if needed for critical systems.
+        logger.debug(f"Topic '{topic}' did not match any known device patterns.")
 
-# This global on_message callback is for debugging to ensure ANY message is received by the client.
-# If messages appear here but not in device-specific on_mqtt_message_specific, then
-# the issue is with how message_callback_add is being handled or topic filtering.
-# --- Original Global MQTT Message Callback (renamed for clarity) ---
-def on_mqtt_message_original_global(client, userdata, msg):
-    logger.debug(f"GLOBAL MQTT MESSAGE RECEIVED: Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
+# --- Modified Function for MQTT Connection and Discovery ---
+def get_mqtt_broker_info(current_broker_address=None, current_port=None, current_username=None, current_password=None):
+    """Prompts user for MQTT broker details, showing existing values as defaults."""
+    print("\n--- MQTT Broker Configuration ---")
 
-# --- ADDED: Global MQTT Disconnect Callback ---
-def on_mqtt_disconnect(client, userdata, rc):
-    logger.warning(f"MQTT client disconnected with result code: {rc}")
-    # You might want to add re-connection logic here if 'loop_forever' is not used,
-    # or if you need to handle specific disconnect codes.
+    broker_address = input(f"Enter MQTT broker address (current: {current_broker_address if current_broker_address else 'not set'}): ") or (current_broker_address if current_broker_address else '')
+    port = input(f"Enter MQTT port (current: {current_port if current_port else '1883'}): ") or (current_port if current_port else '1883')
+    username = input(f"Enter MQTT username (current: {current_username if current_username else 'not set'}; leave blank if none): ") or (current_username if current_username else '')
 
-# --- ADDED: Global MQTT Subscribe Callback ---
-def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
-    logger.info(f"MQTT Subscription acknowledged by broker. Message ID: {mid}, Granted QoS: {granted_qos}")
+    password_display = '******' if current_password else 'not set'
+    password = input(f"Enter MQTT password (current: {password_display}; leave blank if none): ") or (current_password if current_password else '')
 
+    return broker_address, int(port), username if username else None, password if password else None
 
-# ====================================================================
-# Main Launcher (Refactored to run all services in one process)
-# ====================================================================
-def main():
-    logger.info("Starting D-Bus Virtual Devices main service.")
-    
-    # Setup GLib MainLoop for D-Bus
-    from dbus.mainloop.glib import DBusGMainLoop
-    DBusGMainLoop(set_as_default=True)
+def discover_devices_via_mqtt(client):
+    """
+    Connects to MQTT broker and attempts to discover Dingtian and Shelly devices by listening to topics.
+    """
+    global discovered_modules_and_topics_global
+    discovered_modules_and_topics_global.clear()
+
+    print("\nAttempting to discover Dingtian and Shelly devices via MQTT by listening to topics...")
+    print(" (This requires devices to be actively publishing data on topics containing 'dingtian' or 'shelly'.)")
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    client.loop_start()
+
+    discovery_duration = 60
+    print(f"Listening for messages for {discovery_duration} seconds...")
+    time.sleep(discovery_duration)
+
+    client.loop_stop()
+
+    print(f"Found {len(discovered_modules_and_topics_global)} potential Dingtian/Shelly modules.")
+    return discovered_modules_and_topics_global
+
+def create_or_edit_config():
+    """
+    Creates or edits a config file based on user input.
+    The file will be located in /data/setupOptions/external-devices and named optionsSet.
+    """
+    config_dir = '/data/setupOptions/external-devices'
+    config_path = os.path.join(config_dir, 'optionsSet')
+
+    os.makedirs(config_dir, exist_ok=True)
 
     config = configparser.ConfigParser()
-    if not os.path.exists(CONFIG_FILE_PATH):
-        logger.critical(f"Config file not found: {CONFIG_FILE_PATH}")
-        sys.exit(1)
-    
-    try:
-        config.read(CONFIG_FILE_PATH)
-    except configparser.Error as e:
-        logger.critical(f"Error parsing config file: {e}")
-        sys.exit(1)
-    
-    # Configure logging level based on config
-    log_level = logging.INFO
-    if config.has_section('Global'):
-        log_level_str = config['Global'].get('LogLevel', 'INFO').upper()
-        log_level = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR}.get(log_level_str, logging.INFO)
-    logger.setLevel(log_level)
+    file_exists = os.path.exists(config_path)
 
-    # --- START DEBUGGING OVERRIDE: Force DEBUG level ---
-    logger.setLevel(logging.DEBUG)
-    logger.debug("DEBUG_OVERRIDE: Logging level forced to DEBUG for troubleshooting.")
-    # --- END DEBUGGING OVERRIDE ---
+    existing_relay_modules_by_index = {}
+    existing_switches_by_module_and_switch_idx = {}
+    existing_inputs_by_module_and_input_idx = {}
+    existing_temp_sensors_by_index = {}
+    existing_tank_sensors_by_index = {}
+    existing_virtual_batteries_by_index = {}
 
 
-    # --- Setup a single global MQTT client ---
-    mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
-    MQTT_HOST = mqtt_config.get('BrokerAddress', 'localhost')
-    MQTT_PORT = mqtt_config.getint('Port', 1883)
-    MQTT_USERNAME = mqtt_config.get('Username')
-    MQTT_PASSWORD = mqtt_config.get('Password')
+    highest_relay_module_idx_in_file = 0
+    highest_temp_sensor_idx_in_file = 0
+    highest_tank_sensor_idx_in_file = 0
+    highest_virtual_battery_idx_in_file = 0
 
-    client_id = f"external-devices-main-script-{os.getpid()}"
-    logger.info(f"Using MQTT Client ID: {client_id}")
-    # FIX: Corrected CallbackAPIVersion to start with an uppercase 'V'
-    mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+    highest_existing_device_instance = 99
+    highest_existing_device_index = 0
 
-    # --- START DEBUGGING ADDITIONS: Specific callbacks for test topic ---
-    TEST_MQTT_TOPIC = "venus-home/N/c0619ab1f730/battery/1/Dc/0/Power" # This is already a DbusBattery topic.
+    existing_mqtt_broker = ''
+    existing_mqtt_port = '1883'
+    existing_mqtt_username = ''
+    existing_mqtt_password = ''
+    current_loglevel_from_config = 'INFO'
 
-    def debug_on_connect(client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            logger.info("DEBUG_TEST_CONNECT: Connected to MQTT Broker successfully!")
-            # Explicitly subscribe to the test topic here to ensure it's always active
-            client.subscribe(TEST_MQTT_TOPIC) 
-            logger.info(f"DEBUG_TEST_CONNECT: Subscribed to '{TEST_MQTT_TOPIC}' for global monitoring.")
-            on_mqtt_connect_original_global(client, userdata, flags, rc, properties)
-        else:
-            logger.error(f"DEBUG_TEST_CONNECT: Failed to connect, return code {rc}")
+    if file_exists:
+        print(f"Existing config file found at {config_path}.")
+        while True:
+            print("\n--- Configuration Options ---")
+            print("1) Continue to configuration (update existing)")
+            print("2) Create new configuration (WARNING: Existing configuration will be overwritten!)")
+            print("3) Delete existing configuration and exit (WARNING: This cannot be undone!)")
 
-    # Re-enable the global on_message handler
-    def debug_on_message(client, userdata, msg):
-        logger.debug(f"DEBUG_TEST_MESSAGE: RAW MESSAGE (from main debug callback): Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
-        on_mqtt_message_original_global(client, userdata, msg)
+            choice = input("Enter your choice (1, 2 or 3): ")
 
-    mqtt_client.on_connect = debug_on_connect
-    mqtt_client.on_message = debug_on_message 
-    mqtt_client.on_subscribe = on_mqtt_subscribe # <--- ADDED: Global on_subscribe callback
-    # --- END DEBUGGING ADDITIONS ---
+            if choice == '1':
+                config.read(config_path)
+                current_loglevel_from_config = config.get('Global', 'loglevel', fallback='INFO')
 
-    mqtt_client.on_disconnect = on_mqtt_disconnect
-    
-    if MQTT_USERNAME and MQTT_PASSWORD:
-        mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-        logger.info("MQTT Username/Password set.")
-    
-    # Connect and start MQTT client loop in a non-blocking way
-    try:
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-        mqtt_client.loop_start() # Start the MQTT network loop in a separate thread
-        logger.info(f"Attempting to connect to MQTT broker at {MQTT_HOST}:{MQTT_PORT}...")
-    except Exception as e:
-        logger.critical(f"Initial connection to MQTT broker failed: {e}. Exiting.")
-        traceback.print_exc()
-        sys.exit(1)
+                existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
+                existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
+                existing_mqtt_username = config.get('MQTT', 'username', fallback='')
+                existing_mqtt_password = config.get('MQTT', 'password', fallback='')
 
-    active_services = [] # List to hold references to our D-Bus services
+                for section in config.sections():
+                    if config.has_option(section, 'deviceinstance'):
+                        try:
+                            instance = config.getint(section, 'deviceinstance')
+                            if instance > highest_existing_device_instance:
+                                highest_existing_device_instance = instance
+                        except ValueError:
+                            pass
+                    if config.has_option(section, 'deviceindex'):
+                        try:
+                            index = config.getint(section, 'deviceindex')
+                            if index > highest_existing_device_index:
+                                highest_existing_device_index = index
+                        except ValueError:
+                            pass
 
-    device_type_map = {
-        'relay_module_': DbusSwitch, # This is the only prefix for a DbusSwitch parent
-        'temp_sensor_': DbusTempSensor,
-        'tank_sensor_': DbusTankSensor,
-        'virtual_battery_': DbusBattery,
-        'input_': DbusDigitalInput
-    }
+                    if section.startswith('Relay_Module_'):
+                        try:
+                            module_idx = int(section.split('_')[2])
+                            highest_relay_module_idx_in_file = max(highest_relay_module_idx_in_file, module_idx)
+                            existing_relay_modules_by_index[module_idx] = {
+                                'serial': config.get(section, 'serial', fallback=''),
+                                'deviceinstance': config.getint(section, 'deviceinstance', fallback=0),
+                                'deviceindex': config.getint(section, 'deviceindex', fallback=0),
+                                'customname': config.get(section, 'customname', fallback=f'Relay Module {module_idx}'),
+                                'numberofswitches': config.getint(section, 'numberofswitches', fallback=0),
+                                'numberofinputs': config.getint(section, 'numberofinputs', fallback=0),
+                                'mqtt_on_state_payload': config.get(section, 'mqtt_on_state_payload', fallback='ON'),
+                                'mqtt_off_state_payload': config.get(section, 'mqtt_off_state_payload', fallback='OFF'),
+                                'mqtt_on_command_payload': config.get(section, 'mqtt_on_command_payload', fallback='ON'),
+                                'mqtt_off_command_payload': config.get(section, 'mqtt_off_command_payload', fallback='OFF'),
+                                # Added moduleserial for discovery exclusion
+                                'moduleserial': config.get(section, 'moduleserial', fallback=''),
+                            }
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed Relay_Module section: {section}")
 
-    sections_to_process = []
-    for section in config.sections():
-        section_lower = section.lower()
-        if section_lower in ['global', 'mqtt']:
-            continue
-        # RE-ENABLED: This correctly skips [switch_X_Y] sections from being processed as top-level devices
-        if section_lower.startswith('switch_') and re.match(r'^switch_\d+_\d+$', section_lower):
-            logger.debug(f"Section '{section}' appears to be a switch output configuration. It will be processed by its parent Relay_Module. Skipping direct device creation.")
-            continue
-        sections_to_process.append(section)
+                    elif section.startswith('switch_'):
+                        try:
+                            parts = section.split('_')
+                            module_idx = int(parts[1])
+                            switch_idx = int(parts[2])
+                            existing_switches_by_module_and_switch_idx[(module_idx, switch_idx)] = {
+                                'customname': config.get(section, 'customname', fallback=f'switch {switch_idx}'),
+                                'group': config.get(section, 'group', fallback=f'Group{module_idx}'),
+                                'mqttstatetopic': config.get(section, 'mqttstatetopic', fallback='path/to/mqtt/topic'),
+                                'mqttcommandtopic': config.get(section, 'mqttcommandtopic', fallback='path/to/mqtt/topic'),
+                            }
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed switch section: {section}")
 
+                    elif section.startswith('input_'):
+                        try:
+                            parts = section.split('_')
+                            module_idx = int(parts[1])
+                            input_idx = int(parts[2])
+                            existing_inputs_by_module_and_input_idx[(module_idx, input_idx)] = {
+                                'customname': config.get(section, 'customname', fallback=f'input {input_idx}'),
+                                'serial': config.get(section, 'serial', fallback=''),
+                                'deviceinstance': config.getint(section, 'deviceinstance', fallback=0),
+                                'deviceindex': config.getint(section, 'deviceindex', fallback=0),
+                                'mqttstatetopic': config.get(section, 'mqttstatetopic', fallback='path/to/mqtt/topic'),
+                                'mqtt_on_state_payload': config.get(section, 'mqtt_on_state_payload', fallback='ON'),
+                                'mqtt_off_state_payload': config.get(section, 'mqtt_off_state_payload', fallback='OFF'),
+                                'type': config.get(section, 'type', fallback='disabled'),
+                            }
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed input section: {section}")
 
-    for section in sections_to_process:
-        section_lower = section.lower()
-        device_class = None
-        device_type_string = None 
+                    elif section.startswith('Temp_Sensor_'):
+                        try:
+                            sensor_idx = int(section.split('_')[2])
+                            highest_temp_sensor_idx_in_file = max(highest_temp_sensor_idx_in_file, sensor_idx)
+                            existing_temp_sensors_by_index[sensor_idx] = {key: val for key, val in config.items(section)}
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed Temp_Sensor section: {section}")
 
-        for prefix, cls in device_type_map.items():
-            if section_lower.startswith(prefix): # This is the key comparison for identifying the device type
-                device_class = cls
-                device_type_string = prefix.strip('_')
-                logger.debug(f"Section '{section}' matched device type '{device_type_string}' (prefix '{prefix}').")
+                    elif section.startswith('Tank_Sensor_'):
+                        try:
+                            sensor_idx = int(section.split('_')[2])
+                            highest_tank_sensor_idx_in_file = max(highest_tank_sensor_idx_in_file, sensor_idx)
+                            existing_tank_sensors_by_index[sensor_idx] = {key: val for key, val in config.items(section)}
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed Tank_Sensor section: {section}")
+
+                    elif section.startswith('Virtual_Battery_'):
+                        try:
+                            battery_idx = int(section.split('_')[2])
+                            highest_virtual_battery_idx_in_file = max(highest_virtual_battery_idx_in_file, battery_idx)
+                            existing_virtual_batteries_by_index[battery_idx] = {key: val for key, val in config.items(section)}
+                        except (ValueError, IndexError):
+                            logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
+
+                print("Continuing to update existing configuration.")
                 break
-        
-        if device_class:
+            elif choice == '2':
+                confirm = input("Are you absolutely sure you want to overwrite the existing configuration file? This cannot be undone! (yes/no): ")
+                if confirm.lower() == 'yes':
+                    os.remove(config_path)
+                    print(f"Existing configuration file deleted: {config_path}")
+                    file_exists = False
+                    config = configparser.ConfigParser()
+                    break
+                else:
+                    print("Creation of new configuration cancelled.")
+            elif choice == '3':
+                confirm = input("Are you absolutely sure you want to delete the configuration file? This cannot be undone! (yes/no): ")
+                if confirm.lower() == 'yes':
+                    os.remove(config_path)
+                    print(f"Configuration file deleted: {config_path}")
+                else:
+                    print("Deletion cancelled.")
+                print("Exiting script.")
+                return
+            else:
+                print("Invalid choice. Please enter 1, 2 or 3.")
+    else:
+        print(f"No existing config file found. A new one will be created at {config_path}.")
+
+    device_instance_counter = highest_existing_device_instance + 1
+    device_index_sequencer = highest_existing_device_index + 1
+
+    # --- Global settings ---
+    if not config.has_section('Global'):
+        config.add_section('Global')
+
+    current_loglevel_prompt_default = config.get('Global', 'loglevel', fallback='INFO')
+    loglevel = input(f"Enter log level (options: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: {current_loglevel_prompt_default}): ") or current_loglevel_prompt_default
+    config.set('Global', 'loglevel', loglevel)
+
+    default_num_relay_modules_initial = 1 if not file_exists else config.getint('Global', 'numberofmodules', fallback=0)
+    current_num_relay_modules_setting = config.getint('Global', 'numberofmodules', fallback=default_num_relay_modules_initial)
+    while True:
+        try:
+            num_relay_modules_input = input(f"Enter the number of relay modules (current: {current_num_relay_modules_setting if current_num_relay_modules_setting > 0 else 'not set'}): ")
+            if num_relay_modules_input:
+                new_num_relay_modules = int(num_relay_modules_input)
+                if new_num_relay_modules < 0:
+                    raise ValueError
+                break
+            elif current_num_relay_modules_setting > 0:
+                new_num_relay_modules = current_num_relay_modules_setting
+                break
+            elif not file_exists:
+                new_num_relay_modules = default_num_relay_modules_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of relay modules.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of relay modules.")
+    config.set('Global', 'numberofmodules', str(new_num_relay_modules))
+
+    default_num_temp_sensors_initial = 0 if not file_exists else config.getint('Global', 'numberoftempsensors', fallback=0)
+    current_num_temp_sensors = config.getint('Global', 'numberoftempsensors', fallback=default_num_temp_sensors_initial)
+    while True:
+        try:
+            num_temp_sensors_input = input(f"Enter the number of temperature sensors (current: {current_num_temp_sensors if current_num_temp_sensors >= 0 else 'not set'}): ")
+            if num_temp_sensors_input:
+                num_temp_sensors = int(num_temp_sensors_input)
+                if num_temp_sensors < 0:
+                    raise ValueError
+                break
+            elif current_num_temp_sensors >= 0:
+                num_temp_sensors = current_num_temp_sensors
+                break
+            elif not file_exists:
+                num_temp_sensors = default_num_temp_sensors_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of temperature sensors.")
+    config.set('Global', 'numberoftempsensors', str(num_temp_sensors))
+
+    default_num_tank_sensors_initial = 0 if not file_exists else config.getint('Global', 'numberoftanksensors', fallback=0)
+    current_num_tank_sensors = config.getint('Global', 'numberoftanksensors', fallback=default_num_tank_sensors_initial)
+    while True:
+        try:
+            num_tank_sensors_input = input(f"Enter the number of tank sensors (current: {current_num_tank_sensors if current_num_tank_sensors >= 0 else 'not set'}): ")
+            if num_tank_sensors_input:
+                num_tank_sensors = int(num_tank_sensors_input)
+                if num_tank_sensors < 0:
+                    raise ValueError
+                break
+            elif current_num_tank_sensors >= 0:
+                num_tank_sensors = current_num_tank_sensors
+                break
+            elif not file_exists:
+                num_tank_sensors = default_num_tank_sensors_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of tank sensors.")
+    config.set('Global', 'numberoftanksensors', str(num_tank_sensors))
+
+    default_num_virtual_batteries_initial = 0 if not file_exists else config.getint('Global', 'numberofvirtualbatteries', fallback=0)
+    current_num_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=default_num_virtual_batteries_initial)
+    while True:
+        try:
+            num_virtual_batteries_input = input(f"Enter the number of virtual batteries (current: {current_num_virtual_batteries if current_num_virtual_batteries >= 0 else 'not set'}): ")
+            if num_virtual_batteries_input:
+                num_virtual_batteries = int(num_virtual_batteries_input)
+                if num_virtual_batteries < 0:
+                    raise ValueError
+                break
+            elif current_num_virtual_batteries >= 0:
+                num_virtual_batteries = current_num_virtual_batteries
+                break
+            elif not file_exists:
+                num_virtual_batteries = default_num_virtual_batteries_initial
+                break
+            else:
+                print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+        except ValueError:
+            print("Invalid input. Please enter a non-negative integer for the number of virtual batteries.")
+    config.set('Global', 'numberofvirtualbatteries', str(num_virtual_batteries))
+
+    # --- MQTT Broker Info ---
+    broker_address, port, username, password = get_mqtt_broker_info(
+        current_broker_address=existing_mqtt_broker,
+        current_port=existing_mqtt_port,
+        current_username=existing_mqtt_username,
+        current_password=existing_mqtt_password
+    )
+
+    # --- Device Discovery ---
+    should_attempt_discovery = False
+    if new_num_relay_modules > highest_relay_module_idx_in_file:
+        should_attempt_discovery = True
+
+    auto_configured_serials_to_info = {}
+
+    if should_attempt_discovery:
+        while True:
+            discovery_choice = input("\nDo you want to try to discover Dingtian/Shelly modules via MQTT?(yes/no): ").lower()
+            if discovery_choice in ['yes', 'no']:
+                break
+            else:
+                print("Invalid choice. Please enter 'yes' or 'no'.")
+
+        if discovery_choice == 'yes':
+            mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            if username:
+                mqtt_client.username_pw_set(username, password)
+
             try:
-                device_config = config[section]
-                
-                # Determine device_index for the current section
-                device_index_match = re.search(r'_(\d+)', section)
-                device_index = device_index_match.group(1) if device_index_match else '0'
-                device_config['DeviceIndex'] = device_index # Inject DeviceIndex into config for class access
+                print(f"Connecting to MQTT broker at {broker_address}:{port}...")
+                mqtt_client.connect(broker_address, port, 60)
+                print("Connected to MQTT broker.")
 
-                serial_number = device_config.get('Serial')
-                if not serial_number:
-                    # Generate a random serial number if not provided
-                    serial_number = str(random.randint(1000000000000000, 9999999999999999))
-                    logger.warning(f"Serial number not found or is empty for [{section}]. Generating random serial: {serial_number}")
-                    # Optionally, save this back to config, but for a virtual device, usually not critical.
+                all_discovered_modules_with_topics = discover_devices_via_mqtt(mqtt_client)
 
-                # IMPORTANT: Create a NEW, independent BusConnection instance for each service
-                # This ensures each service gets its own D-Bus name.
-                device_bus = dbus.bus.BusConnection(dbus.Bus.TYPE_SYSTEM)
-                
-                # Default service name uses 'external_' prefix and device type
-                base_service_name_type = device_type_string.replace("_", "")
-                if base_service_name_type == 'relaymodule': base_service_name_type = 'switch' # Special case for service name
-                elif base_service_name_type == 'input': base_service_name_type = 'digitalinput' # Special case
-                # START MODIFICATION
-                elif base_service_name_type == 'tanksensor': base_service_name_type = 'tank'
-                elif base_service_name_type == 'tempsensor': base_service_name_type = 'temperature'
-                # END MODIFICATION
-                
-                service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
+                mqtt_client.disconnect()
+                print("Disconnected from MQTT broker.")
 
-                if device_class == DbusSwitch:
-                    # This branch is now ONLY for Relay_Module_X sections (multi-output switch modules)
-                    output_configs = []
-                    
-                    mqtt_on_state = device_config.get('mqtt_on_state_payload', '1')
-                    mqtt_off_state = device_config.get('mqtt_off_state_payload', '0')
-                    mqtt_on_cmd = device_config.get('mqtt_on_command_payload', '1')
-                    mqtt_off_cmd = device_config.get('mqtt_off_command_payload', '0')
+                newly_discovered_modules_to_propose = {}
+                skipped_modules_count = 0
+                for module_serial, module_info in all_discovered_modules_with_topics.items():
+                    is_already_in_config = False
+                    for existing_mod_data in existing_relay_modules_by_index.values():
+                        # Check both 'serial' and 'moduleserial' for exclusion
+                        if existing_mod_data.get('serial') == module_serial or \
+                           existing_mod_data.get('moduleserial') == module_serial:
+                            is_already_in_config = True
+                            break
+                    if not is_already_in_config:
+                        newly_discovered_modules_to_propose[module_serial] = module_info
+                    else:
+                        skipped_modules_count += 1
+                if skipped_modules_count > 0:
+                    print(f"\nSkipped {skipped_modules_count} discovered modules as they appear to be already configured by serial or moduleserial.")
 
-                    num_switches = device_config.getint('NumberOfSwitches', 1)
-                    for j in range(1, num_switches + 1):
-                        output_section_name = f'switch_{device_index}_{j}' # e.g., switch_1_1, switch_1_2
-                        output_data = {'index': j, 'name': f'Switch {j}'} # Default name
-                        if config.has_section(output_section_name):
-                            output_settings = config[output_section_name]
-                            output_data.update({
-                                'custom_name': output_settings.get('CustomName', ''),
-                                'group': output_settings.get('Group', ''),
-                                'MqttStateTopic': output_settings.get('MqttStateTopic'),
-                                'MqttCommandTopic': output_settings.get('MqttCommandTopic')
-                            })
-                            logger.debug(f"Found and added output config for {output_section_name} to Relay_Module_{device_index}.")
-                        else:
-                            logger.warning(f"Expected switch output section '{output_section_name}' for Relay_Module_{device_index} not found. Skipping this output.")
-                        output_configs.append(output_data)
-                    
-                    # The service name for a Relay_Module is based on its serial.
-                    service = device_class(service_name, device_config, output_configs, serial_number, mqtt_client,
-                                        mqtt_on_state, mqtt_off_state, mqtt_on_cmd, mqtt_off_cmd, device_bus)
-                else: # For all other device types (DigitalInput, TempSensor, TankSensor, Battery)
-                    service = device_class(service_name, device_config, serial_number, mqtt_client, device_bus)
-                
-                active_services.append(service)
-                logger.info(f"Successfully initialized and registered D-Bus service for [{section}] of type '{device_type_string}'.")
+
+                if newly_discovered_modules_to_propose:
+                    print("\n--- Newly Discovered Modules (by Serial Number) ---")
+                    discovered_module_serials_list = sorted(list(newly_discovered_modules_to_propose.keys()))
+                    for i, module_serial in enumerate(discovered_module_serials_list):
+                        module_info = newly_discovered_modules_to_propose[module_serial]
+                        print(f"{i+1}) Device Type: {module_info['device_type'].capitalize()}, Module Serial: {module_serial}")
+
+                    selected_indices_input = input("Enter the numbers of the modules you want to auto-configure (e.g., 1,3,4 or 'all'): ")
+                    selected_serials_for_auto_config = []
+
+                    if selected_indices_input.lower() == 'all':
+                        selected_serials_for_auto_config = discovered_module_serials_list
+                    else:
+                        try:
+                            indices = [int(x.strip()) - 1 for x in selected_indices_input.split(',')]
+                            for idx in indices:
+                                if 0 <= idx < len(discovered_module_serials_list):
+                                    selected_serials_for_auto_config.append(discovered_module_serials_list[idx])
+                                else:
+                                    print(f"Warning: Invalid selection number {idx+1} ignored.")
+                        except ValueError:
+                            print("Invalid input for selection. No specific modules selected for auto-configuration.")
+
+                    if selected_serials_for_auto_config:
+                        print(f"\n--- Staging Auto-Configuration for Selected Modules ---")
+
+                        for module_serial in selected_serials_for_auto_config:
+                            auto_configured_serials_to_info[module_serial] = newly_discovered_modules_to_propose[module_serial]
+                            print(f"  Module {module_serial} selected for auto-configuration.")
+                            print(f"\n--- continuing to manual configuration of existing devices, if present ---")
+                    else:
+                        print("\nNo specific modules selected for auto-configuration.")
+                else:
+                    print("\nNo new Dingtian or Shelly modules found via MQTT topic discovery to auto-configure.")
 
             except Exception as e:
-                logger.error(f"Failed to initialize D-Bus service for [{section}] ({device_type_string}): {e}")
-                traceback.print_exc()
+                logger.error(f"\nCould not connect to MQTT broker or perform discovery: {e}")
+                print("Proceeding with manual configuration without MQTT discovery.")
         else:
-            logger.warning(f"Section '{section}' does not match any known device type prefix. Skipping.")
+            print("\nSkipping MQTT discovery.")
+    else:
+        print("\nSkipping Dingtian/Shelly module discovery (number of relay modules not increased from previous setting or is 0 for new config).")
 
-    if not active_services:
-        logger.warning("No device services were started. Exiting.")
-        if mqtt_client:
-            mqtt_client.loop_stop()
-            mqtt_client.disconnect()
-        sys.exit(0)
 
-    logger.info('All identified external device services created. Starting GLib.MainLoop(). Press Ctrl+C to exit.')
-    
-    # Keep the main loop running to maintain D-Bus services and MQTT client
-    mainloop = GLib.MainLoop()
-    try:
-        mainloop.run()
-    except KeyboardInterrupt:
-        logger.info("Exiting D-Bus Virtual Devices main service.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in the main loop: {e}")
-        traceback.print_exc()
-    finally:
-        # Cleanup: Disconnect MQTT client cleanly
-        if mqtt_client:
-            mqtt_client.loop_stop()
-            mqtt_client.disconnect()
-            logger.info("MQTT client disconnected.")
-        logger.info("Script finished.")
+    # --- Main Configuration Loop for Relay Modules ---
+    print("\n--- Configuring Relay Modules ---")
+    used_auto_configured_serials = set()
 
+    for i in range(1, new_num_relay_modules + 1):
+        relay_module_section = f'Relay_Module_{i}'
+
+        module_data_from_file = existing_relay_modules_by_index.get(i, {})
+
+        current_serial = module_data_from_file.get('serial', None)
+        is_auto_configured_for_this_slot = False
+        module_info_from_discovery = None
+        discovered_module_serial_for_slot = None # To hold the specific auto_serial_key for this slot
+
+
+        if i not in existing_relay_modules_by_index and (len(auto_configured_serials_to_info) > len(used_auto_configured_serials)):
+            for auto_serial_key in sorted(auto_configured_serials_to_info.keys()):
+                if auto_serial_key not in used_auto_configured_serials:
+                    # 'serial' remains randomized as per user's request to avoid MQTT client ID issues
+                    current_serial = generate_serial()
+                    discovered_module_serial_for_slot = auto_serial_key # Store the discovered serial for 'moduleserial' field
+                    module_info_from_discovery = auto_configured_serials_to_info[auto_serial_key]
+                    is_auto_configured_for_this_slot = True
+                    used_auto_configured_serials.add(auto_serial_key)
+                    print(f"Auto-configuring NEW Relay Module slot {i}. Assigned generated serial {current_serial} and discovered module serial {discovered_module_serial_for_slot}.")
+                    break
+
+        # If current_serial is still None (meaning it's a new slot not picked for auto-config, or no auto-config available)
+        if current_serial is None:
+            current_serial = generate_serial()
+            logger.debug(f"Generated new serial {current_serial} for Relay Module slot {i}.")
+
+        is_new_module_slot = (i > highest_relay_module_idx_in_file)
+
+        if not config.has_section(relay_module_section):
+            config.add_section(relay_module_section)
+
+        config.set(relay_module_section, 'serial', current_serial) # Set the (generated or existing) serial
+
+        # Handle 'moduleserial' field
+        if is_auto_configured_for_this_slot and discovered_module_serial_for_slot:
+            # If this is a newly auto-configured slot, set moduleserial to the discovered one
+            config.set(relay_module_section, 'moduleserial', discovered_module_serial_for_slot)
+        elif module_data_from_file.get('moduleserial'):
+            # If it's an existing module and it already has a moduleserial, retain it
+            config.set(relay_module_section, 'moduleserial', module_data_from_file['moduleserial'])
+        else:
+            # Otherwise, ensure moduleserial is not present
+            if config.has_option(relay_module_section, 'moduleserial'):
+                config.remove_option(relay_module_section, 'moduleserial')
+
+
+        if is_new_module_slot:
+            config.set(relay_module_section, 'deviceinstance', str(device_instance_counter))
+            device_instance_counter += 1
+        else:
+            current_device_instance = module_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+            device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
+            val = device_instance_input if device_instance_input else str(current_device_instance)
+            config.set(relay_module_section, 'deviceinstance', val)
+
+        if is_new_module_slot:
+            config.set(relay_module_section, 'deviceindex', str(device_index_sequencer))
+            device_index_sequencer += 1
+        else:
+            current_device_index = module_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+            device_index_input = input(f"Enter device index for Relay Module {i} (current: {current_device_index}): ")
+            val = device_index_input if device_index_input else str(current_device_index)
+            config.set(relay_module_section, 'deviceindex', val)
+
+        current_custom_name = module_data_from_file.get('customname', f'Relay Module {i}')
+        if is_auto_configured_for_this_slot and module_info_from_discovery:
+            config.set(relay_module_section, 'customname', f"{module_info_from_discovery['device_type'].capitalize()} Module {i} (Auto)")
+        else:
+            custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
+            config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        current_num_switches_for_module = module_data_from_file.get('numberofswitches', 2)
+        if is_auto_configured_for_this_slot and module_info_from_discovery:
+            if module_info_from_discovery['device_type'] == 'dingtian':
+                dingtian_out_switches = set()
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'out' and comp_id:
+                        dingtian_out_switches.add(comp_id)
+                current_num_switches_for_module = len(dingtian_out_switches) if dingtian_out_switches else 1
+            elif module_info_from_discovery['device_type'] == 'shelly':
+                shelly_relays = set()
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'relay' and comp_id:
+                        shelly_relays.add(comp_id)
+                current_num_switches_for_module = len(shelly_relays) if shelly_relays else 1
+            config.set(relay_module_section, 'numberofswitches', str(current_num_switches_for_module))
+        else:
+            while True:
+                try:
+                    num_switches_input = input(f"Enter the number of switches for Relay Module {i} (current: {current_num_switches_for_module if current_num_switches_for_module > 0 else 'not set'}): ")
+                    if num_switches_input:
+                        num_switches = int(num_switches_input)
+                        if num_switches <= 0:
+                            raise ValueError
+                        break
+                    elif current_num_switches_for_module > 0:
+                        num_switches = current_num_switches_for_module
+                        break
+                    else:
+                        print("Invalid input. Please enter a positive integer for the number of switches.")
+                except ValueError:
+                    print("Invalid input. Please enter a positive integer for the number of switches.")
+            config.set(relay_module_section, 'numberofswitches', str(num_switches))
+
+        current_num_inputs_for_module = module_data_from_file.get('numberofinputs', 0)
+        if is_auto_configured_for_this_slot and module_info_from_discovery:
+            if module_info_from_discovery['device_type'] == 'dingtian':
+                dingtian_in_inputs = set()
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, comp_type, comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == auto_serial_key and comp_type == 'in' and comp_id: # comp_type will be 'in' if the 'out/iX' regex matched
+                        dingtian_in_inputs.add(comp_id)
+                current_num_inputs_for_module = len(dingtian_in_inputs)
+                config.set(relay_module_section, 'numberofinputs', str(current_num_inputs_for_module))
+            elif module_info_from_discovery['device_type'] == 'shelly':
+                current_num_inputs_for_module = 0
+                config.set(relay_module_section, 'numberofinputs', str(current_num_inputs_for_module))
+        else:
+            while True:
+                try:
+                    num_inputs_input = input(f"Enter the number of inputs for Relay Module {i} (current: {current_num_inputs_for_module}): ")
+                    if num_inputs_input:
+                        num_inputs = int(num_inputs_input)
+                        if num_inputs < 0:
+                            raise ValueError
+                        break
+                    elif current_num_inputs_for_module >= 0:
+                        num_inputs = current_num_inputs_for_module
+                        break
+                    else:
+                        print("Invalid input. Please enter a non-negative integer for the number of inputs.")
+                except ValueError:
+                    print("Invalid input. Please enter a non-negative integer for the number of inputs.")
+            config.set(relay_module_section, 'numberofinputs', str(num_inputs))
+
+
+        payload_defaults_dingtian = {'on_state': 'ON', 'off_state': 'OFF', 'on_cmd': 'ON', 'off_cmd': 'OFF'}
+        payload_defaults_shelly = {'on_state': '{"output": true}', 'off_state': '{"output": false}', 'on_cmd': 'on', 'off_cmd': 'off'}
+
+        default_payloads = payload_defaults_dingtian
+        if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'shelly':
+            default_payloads = payload_defaults_shelly
+
+        if is_auto_configured_for_this_slot:
+            config.set(relay_module_section, 'mqtt_on_state_payload', default_payloads['on_state'])
+            config.set(relay_module_section, 'mqtt_off_state_payload', default_payloads['off_state'])
+            config.set(relay_module_section, 'mqtt_on_command_payload', default_payloads['on_cmd'])
+            config.set(relay_module_section, 'mqtt_off_command_payload', default_payloads['off_cmd'])
+        else:
+            current_mqtt_on_state_payload = module_data_from_file.get('mqtt_on_state_payload', default_payloads['on_state'])
+            mqtt_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i} (current: {current_mqtt_on_state_payload}): ")
+            config.set(relay_module_section, 'mqtt_on_state_payload', mqtt_on_state_payload if mqtt_on_state_payload else current_mqtt_on_state_payload)
+
+            current_mqtt_off_state_payload = module_data_from_file.get('mqtt_off_state_payload', default_payloads['off_state'])
+            mqtt_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i} (current: {current_mqtt_off_state_payload}): ")
+            config.set(relay_module_section, 'mqtt_off_state_payload', mqtt_off_state_payload if mqtt_off_state_payload else current_mqtt_off_state_payload)
+
+            current_mqtt_on_command_payload = module_data_from_file.get('mqtt_on_command_payload', default_payloads['on_cmd'])
+            mqtt_on_command_payload = input(f"Enter MQTT ON command payload for Relay Module {i} (current: {current_mqtt_on_command_payload}): ")
+            config.set(relay_module_section, 'mqtt_on_command_payload', mqtt_on_command_payload if mqtt_on_command_payload else current_mqtt_on_command_payload)
+
+            current_mqtt_off_command_payload = module_data_from_file.get('mqtt_off_command_payload', default_payloads['off_cmd'])
+            mqtt_off_command_payload = input(f"Enter MQTT OFF command payload for Relay Module {i} (current: {current_mqtt_off_command_payload}): ")
+            config.set(relay_module_section, 'mqtt_off_command_payload', mqtt_off_command_payload if mqtt_off_command_payload else current_mqtt_off_command_payload)
+
+        num_switches_for_module_section = int(config.get(relay_module_section, 'numberofswitches'))
+        for j in range(1, num_switches_for_module_section + 1):
+            switch_section = f'switch_{i}_{j}'
+
+            switch_data_from_file = existing_switches_by_module_and_switch_idx.get((i, j), {})
+
+            if not config.has_section(switch_section):
+                config.add_section(switch_section)
+
+            auto_discovered_state_topic = None
+            auto_discovered_command_topic = None
+
+            if is_auto_configured_for_this_slot and module_info_from_discovery:
+                base_topic_path = module_info_from_discovery['base_topic_path']
+                device_type = module_info_from_discovery['device_type']
+
+                if device_type == 'dingtian':
+                    for t in module_info_from_discovery['topics']:
+                        parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
+                        if parsed_serial == discovered_module_serial_for_slot and parsed_comp_type == 'out' and parsed_comp_id == str(j):
+                            auto_discovered_state_topic = t
+                            auto_discovered_command_topic = t.replace('/out/r', '/in/r', 1)
+                            break
+                elif device_type == 'shelly':
+                    shelly_switch_idx = j - 1
+                    auto_discovered_state_topic = f'{base_topic_path}/status/switch:{shelly_switch_idx}'
+                    auto_discovered_command_topic = f'{base_topic_path}/command/switch:{shelly_switch_idx}'
+
+
+            current_switch_custom_name = switch_data_from_file.get('customname', f'switch {j}')
+            if is_auto_configured_for_this_slot:
+                config.set(switch_section, 'customname', current_switch_custom_name)
+            else:
+                switch_custom_name = input(f"Enter custom name for Relay Module {i}, switch {j} (current: {current_switch_custom_name}): ")
+                config.set(switch_section, 'customname', switch_custom_name if switch_custom_name else current_switch_custom_name)
+
+            current_switch_group = switch_data_from_file.get('group', f'Group{i}')
+            if is_auto_configured_for_this_slot:
+                config.set(switch_section, 'group', current_switch_group)
+            else:
+                switch_group = input(f"Enter group for Relay Module {i}, switch {j} (current: {current_switch_group}): ")
+                config.set(switch_section, 'group', switch_group if switch_group else current_switch_group)
+
+            current_mqtt_state_topic = switch_data_from_file.get('mqttstatetopic', auto_discovered_state_topic if auto_discovered_state_topic else 'path/to/mqtt/topic')
+            if is_auto_configured_for_this_slot:
+                config.set(switch_section, 'mqttstatetopic', current_mqtt_state_topic)
+            else:
+                mqtt_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, switch {j} (current: {current_mqtt_state_topic}): ")
+                config.set(switch_section, 'mqttstatetopic', mqtt_state_topic if mqtt_state_topic else current_mqtt_state_topic)
+
+            current_mqtt_command_topic = switch_data_from_file.get('mqttcommandtopic', auto_discovered_command_topic if auto_discovered_command_topic else 'path/to/mqtt/topic')
+            if is_auto_configured_for_this_slot:
+                config.set(switch_section, 'mqttcommandtopic', current_mqtt_command_topic)
+            else:
+                mqtt_command_topic = input(f"Enter MQTT command topic for Relay Module {i}, switch {j} (current: {current_mqtt_command_topic}): ")
+                config.set(switch_section, 'mqttcommandtopic', mqtt_command_topic if mqtt_command_topic else current_mqtt_command_topic)
+
+        num_inputs_for_module_section = int(config.get(relay_module_section, 'numberofinputs'))
+        for k in range(1, num_inputs_for_module_section + 1):
+            input_section = f'input_{i}_{k}'
+
+            input_data_from_file = existing_inputs_by_module_and_input_idx.get((i, k), {})
+
+            is_new_input_slot = (i > highest_relay_module_idx_in_file or (i == highest_relay_module_idx_in_file and k > len([s for s in existing_inputs_by_module_and_input_idx if s[0] == i])))
+
+            if not config.has_section(input_section):
+                config.add_section(input_section)
+
+            current_input_serial = input_data_from_file.get('serial', None)
+            if current_input_serial is None:
+                current_input_serial = generate_serial()
+                logger.debug(f"Generated new serial {current_input_serial} for Relay Module {i}, Input {k}.")
+            config.set(input_section, 'serial', current_input_serial)
+
+            if is_new_input_slot:
+                config.set(input_section, 'deviceinstance', str(device_instance_counter))
+                device_instance_counter += 1
+            else:
+                current_device_instance = input_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+                device_instance_input = input(f"Enter device instance for Relay Module {i}, Input {k} (current: {current_device_instance}): ")
+                val = device_instance_input if device_instance_input else str(current_device_instance)
+                config.set(input_section, 'deviceinstance', val)
+
+            if is_new_input_slot:
+                config.set(input_section, 'deviceindex', str(device_index_sequencer))
+                device_index_sequencer += 1
+            else:
+                current_device_index = input_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+                device_index_input = input(f"Enter device index for Relay Module {i}, Input {k} (current: {current_device_index}): ")
+                val = device_index_input if device_index_input else str(current_device_index)
+                config.set(input_section, 'deviceindex', val)
+
+            current_input_custom_name = input_data_from_file.get('customname', f'Input {k}')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'customname', f"Dingtian Input {k} (Auto)")
+            else:
+                input_custom_name = input(f"Enter custom name for Relay Module {i}, Input {k} (current: {current_input_custom_name}): ")
+                config.set(input_section, 'customname', input_custom_name if input_custom_name else current_input_custom_name)
+
+            auto_discovered_input_state_topic = None
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                base_topic_path = module_info_from_discovery['base_topic_path']
+                for t in module_info_from_discovery['topics']:
+                    parsed_type, parsed_serial, parsed_comp_type, parsed_comp_id, _ = parse_mqtt_device_topic(t)
+                    if parsed_serial == discovered_module_serial_for_slot and parsed_comp_type == 'in' and parsed_comp_id == str(k):
+                        auto_discovered_input_state_topic = t
+                        break
+
+            current_mqtt_input_state_topic = input_data_from_file.get('mqttstatetopic', auto_discovered_input_state_topic if auto_discovered_input_state_topic else 'path/to/mqtt/input/topic')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqttstatetopic', current_mqtt_input_state_topic)
+            else:
+                mqtt_input_state_topic = input(f"Enter MQTT state topic for Relay Module {i}, Input {k} (current: {current_mqtt_input_state_topic}): ")
+                config.set(input_section, 'mqttstatetopic', mqtt_input_state_topic if mqtt_input_state_topic else current_mqtt_input_state_topic)
+
+            current_mqtt_input_on_state_payload = input_data_from_file.get('mqtt_on_state_payload', 'ON')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqtt_on_state_payload', 'ON')
+            else:
+                mqtt_input_on_state_payload = input(f"Enter MQTT ON state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_on_state_payload}): ")
+                config.set(input_section, 'mqtt_on_state_payload', mqtt_input_on_state_payload if mqtt_input_on_state_payload else current_mqtt_input_on_state_payload)
+
+            current_mqtt_input_off_state_payload = input_data_from_file.get('mqtt_off_state_payload', 'OFF')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'mqtt_off_state_payload', 'OFF')
+            else:
+                mqtt_input_off_state_payload = input(f"Enter MQTT OFF state payload for Relay Module {i}, Input {k} (current: {current_mqtt_input_off_state_payload}): ")
+                config.set(input_section, 'mqtt_off_state_payload', mqtt_input_off_state_payload if mqtt_input_off_state_payload else current_mqtt_input_off_state_payload)
+
+            input_types = ['disabled', 'door alarm', 'bilge pump', 'bilge alarm', 'burglar alarm', 'smoke alarm', 'fire alarm', 'CO2 alarm']
+            current_input_type = input_data_from_file.get('type', 'disabled')
+            if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
+                config.set(input_section, 'type', 'disabled')
+            else:
+                while True:
+                    input_type_input = input(f"Enter type for Relay Module {i}, Input {k} (options: {', '.join(input_types)}; current: {current_input_type}): ")
+                    if input_type_input:
+                        if input_type_input.lower() in input_types:
+                            config.set(input_section, 'type', input_type_input.lower())
+                            break
+                        else:
+                            print(f"Invalid type. Please choose from: {', '.join(input_types)}")
+                    else:
+                        config.set(input_section, 'type', current_input_type)
+                        break
+
+    print("\n--- Configuring Temperature Sensors ---")
+    for i in range(1, num_temp_sensors + 1):
+        temp_sensor_section = f'Temp_Sensor_{i}'
+        sensor_data_from_file = existing_temp_sensors_by_index.get(i, {})
+
+        is_new_sensor_slot = (i > highest_temp_sensor_idx_in_file)
+
+        if not config.has_section(temp_sensor_section):
+            config.add_section(temp_sensor_section)
+
+        if is_new_sensor_slot:
+            config.set(temp_sensor_section, 'deviceinstance', str(device_instance_counter))
+            device_instance_counter += 1
+        else:
+            current_device_instance = sensor_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+            device_instance_input = input(f"Enter device instance for Temperature Sensor {i} (current: {current_device_instance}): ")
+            config.set(temp_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+
+        if is_new_sensor_slot:
+            config.set(temp_sensor_section, 'deviceindex', str(device_index_sequencer))
+            device_index_sequencer += 1
+        else:
+            current_device_index = sensor_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+            device_index_input = input(f"Enter device index for Temperature Sensor {i} (current: {current_device_index}): ")
+            config.set(temp_sensor_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+
+
+        current_custom_name = sensor_data_from_file.get('customname', f'Temperature Sensor {i}')
+        custom_name = input(f"Enter custom name for Temperature Sensor {i} (current: {current_custom_name}): ")
+        config.set(temp_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        current_serial = sensor_data_from_file.get('serial', generate_serial())
+        if not sensor_data_from_file.get('serial'):
+            print(f"Generated new serial for Temperature Sensor {i}: {current_serial}")
+        config.set(temp_sensor_section, 'serial', current_serial)
+
+        temp_sensor_types = ['battery', 'fridge', 'room', 'outdoor', 'water heater', 'freezer', 'generic']
+        current_temp_sensor_type = sensor_data_from_file.get('type', 'generic')
+        while True:
+            temp_type_input = input(f"Enter type for Temperature Sensor {i} (options: {', '.join(temp_sensor_types)}; current: {current_temp_sensor_type}): ")
+            if temp_type_input:
+                if temp_type_input.lower() in temp_sensor_types:
+                    config.set(temp_sensor_section, 'type', temp_type_input.lower())
+                    break
+                else:
+                    print(f"Invalid type. Please choose from: {', '.join(temp_sensor_types)}")
+            else:
+                config.set(temp_sensor_section, 'type', current_temp_sensor_type)
+                break
+
+        current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/temperature')
+        temp_state_topic = input(f"Enter MQTT temperature state topic for Temperature Sensor {i} (current: {current_temp_state_topic}): ")
+        config.set(temp_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
+
+        current_humidity_state_topic = sensor_data_from_file.get('humiditystatetopic', 'path/to/mqtt/humidity')
+        humidity_state_topic = input(f"Enter MQTT humidity state topic for Temperature Sensor {i} (current: {current_humidity_state_topic}): ")
+        config.set(temp_sensor_section, 'humiditystatetopic', humidity_state_topic if humidity_state_topic else current_humidity_state_topic)
+
+        current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/battery')
+        battery_state_topic = input(f"Enter MQTT battery state topic for Temperature Sensor {i} (current: {current_battery_state_topic}): ")
+        config.set(temp_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
+
+    print("\n--- Configuring Tank Sensors ---")
+    fluid_types_map = {
+        'fuel': 0, 'fresh water': 1, 'waste water': 2, 'live well': 3,
+        'oil': 4, 'black water': 5, 'gasoline': 6, 'diesel': 7,
+        'lpg': 8, 'lng': 9, 'hydraulic oil': 10, 'raw water': 11
+    }
+    for i in range(1, num_tank_sensors + 1):
+        tank_sensor_section = f'Tank_Sensor_{i}'
+        sensor_data_from_file = existing_tank_sensors_by_index.get(i, {})
+
+        is_new_sensor_slot = (i > highest_tank_sensor_idx_in_file)
+
+        if not config.has_section(tank_sensor_section):
+            config.add_section(tank_sensor_section)
+
+        if is_new_sensor_slot:
+            config.set(tank_sensor_section, 'deviceinstance', str(device_instance_counter))
+            device_instance_counter += 1
+        else:
+            current_device_instance = sensor_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+            device_instance_input = input(f"Enter device instance for Tank Sensor {i} (current: {current_device_instance}): ")
+            config.set(tank_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+
+        if is_new_sensor_slot:
+            config.set(tank_sensor_section, 'deviceindex', str(device_index_sequencer))
+            device_index_sequencer += 1
+        else:
+            current_device_index = sensor_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+            device_index_input = input(f"Enter device index for Tank Sensor {i} (current: {current_device_index}): ")
+            config.set(tank_sensor_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+
+
+        current_custom_name = sensor_data_from_file.get('customname', f'Tank Sensor {i}')
+        custom_name = input(f"Enter custom name for Tank Sensor {i} (current: {current_custom_name}): ")
+        config.set(tank_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        current_serial = sensor_data_from_file.get('serial', generate_serial())
+        if not sensor_data_from_file.get('serial'):
+            print(f"Generated new serial for Tank Sensor {i}: {current_serial}")
+        config.set(tank_sensor_section, 'serial', current_serial)
+
+        current_level_state_topic = sensor_data_from_file.get('levelstatetopic', 'path/to/mqtt/level')
+        level_state_topic = input(f"Enter MQTT level state topic for Tank Sensor {i} (current: {current_level_state_topic}): ")
+        config.set(tank_sensor_section, 'levelstatetopic', level_state_topic if level_state_topic else current_level_state_topic)
+
+        current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/battery')
+        battery_state_topic = input(f"Enter MQTT battery state topic for Tank Sensor {i} (current: {current_battery_state_topic}): ")
+        config.set(tank_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
+
+        current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/temperature')
+        temp_state_topic = input(f"Enter MQTT temperature state topic for Tank Sensor {i} (current: {current_temp_state_topic}): ")
+        config.set(tank_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
+
+        current_raw_value_state_topic = sensor_data_from_file.get('rawvaluestatetopic', 'path/to/mqtt/rawvalue')
+        raw_value_state_topic = input(f"Enter MQTT raw value state topic for Tank Sensor {i} (current: {current_raw_value_state_topic}): ")
+        config.set(tank_sensor_section, 'rawvaluestatetopic', raw_value_state_topic if raw_value_state_topic else current_raw_value_state_topic)
+
+        fluid_types_display = ", ".join([f"'{name}'" for name in fluid_types_map.keys()])
+        current_fluid_type_name = sensor_data_from_file.get('fluidtype', 'fresh water')
+        while True:
+            fluid_type_input = input(f"Enter fluid type for Tank Sensor {i} (options: {fluid_types_display}; current: '{current_fluid_type_name}'): ")
+            if fluid_type_input:
+                if fluid_type_input.lower() in fluid_types_map:
+                    config.set(tank_sensor_section, 'fluidtype', fluid_type_input.lower())
+                    break
+                else:
+                    print("Invalid fluid type. Please choose from the available options.")
+            else:
+                config.set(tank_sensor_section, 'fluidtype', current_fluid_type_name)
+                break
+
+        current_raw_value_empty = sensor_data_from_file.get('rawvalueempty', '0')
+        config.set(tank_sensor_section, 'rawvalueempty', input(f"Enter raw value for empty tank (current: {current_raw_value_empty}): ") or current_raw_value_empty)
+
+        current_raw_value_full = sensor_data_from_file.get('rawvaluefull', '50')
+        config.set(tank_sensor_section, 'rawvaluefull', input(f"Enter raw value for full tank (current: {current_raw_value_full}): ") or current_raw_value_full)
+
+        current_capacity = sensor_data_from_file.get('capacity', '0.2')
+        config.set(tank_sensor_section, 'capacity', input(f"Enter tank capacity in m³ (current: {current_capacity}): ") or current_capacity)
+
+
+    print("\n--- Configuring Virtual Batteries ---")
+    for i in range(1, num_virtual_batteries + 1):
+        virtual_battery_section = f'Virtual_Battery_{i}'
+        battery_data_from_file = existing_virtual_batteries_by_index.get(i, {})
+
+        is_new_sensor_slot = (i > highest_virtual_battery_idx_in_file)
+
+        if not config.has_section(virtual_battery_section):
+            config.add_section(virtual_battery_section)
+
+        if is_new_sensor_slot:
+            config.set(virtual_battery_section, 'deviceinstance', str(device_instance_counter))
+            device_instance_counter += 1
+        else:
+            current_device_instance = battery_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
+            device_instance_input = input(f"Enter device instance for Virtual Battery {i} (current: {current_device_instance}): ")
+            config.set(virtual_battery_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+
+        if is_new_sensor_slot:
+            config.set(virtual_battery_section, 'deviceindex', str(device_index_sequencer))
+            device_index_sequencer += 1
+        else:
+            current_device_index = battery_data_from_file.get('deviceindex', highest_existing_device_index + 1)
+            device_index_input = input(f"Enter device index for Virtual Battery {i} (current: {current_device_index}): ")
+            config.set(virtual_battery_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+
+
+        current_custom_name = battery_data_from_file.get('customname', f'Virtual Battery {i}')
+        custom_name = input(f"Enter custom name for Virtual Battery {i} (current: {current_custom_name}): ")
+        config.set(virtual_battery_section, 'customname', custom_name if custom_name else current_custom_name)
+
+        current_serial = battery_data_from_file.get('serial', generate_serial())
+        if not battery_data_from_file.get('serial'):
+            print(f"Generated new serial for Virtual Battery {i}: {current_serial}")
+        config.set(virtual_battery_section, 'serial', current_serial)
+
+        current_capacity = battery_data_from_file.get('capacityah', '100')
+        capacity = input(f"Enter capacity for Virtual Battery {i} in Ah (current: {current_capacity}): ")
+        config.set(virtual_battery_section, 'capacityah', capacity if capacity else current_capacity)
+
+        current_current_state_topic = battery_data_from_file.get('currentstatetopic', 'path/to/mqtt/battery/current')
+        current_state_topic = input(f"Enter MQTT current state topic for Virtual Battery {i} (current: {current_current_state_topic}): ")
+        config.set(virtual_battery_section, 'currentstatetopic', current_state_topic if current_state_topic else current_current_state_topic)
+
+        current_power_state_topic = battery_data_from_file.get('powerstatetopic', 'path/to/mqtt/battery/power')
+        power_state_topic = input(f"Enter MQTT power state topic for Virtual Battery {i} (current: {current_power_state_topic}): ")
+        config.set(virtual_battery_section, 'powerstatetopic', power_state_topic if power_state_topic else current_power_state_topic)
+
+        current_temperature_state_topic = battery_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/battery/temperature')
+        temperature_state_topic = input(f"Enter MQTT temperature state topic for Virtual Battery {i} (current: {current_temperature_state_topic}): ")
+        config.set(virtual_battery_section, 'temperaturestatetopic', temperature_state_topic if temperature_state_topic else current_temperature_state_topic)
+
+        current_voltage_state_topic = battery_data_from_file.get('voltagestatetopic', 'path/to/mqtt/battery/voltage')
+        voltage_state_topic = input(f"Enter MQTT voltage state topic for Virtual Battery {i} (current: {current_voltage_state_topic}): ")
+        config.set(virtual_battery_section, 'voltagestatetopic', voltage_state_topic if voltage_state_topic else current_voltage_state_topic)
+
+        current_max_charge_current_state_topic = battery_data_from_file.get('maxchargecurrentstatetopic', 'path/to/mqtt/battery/maxchargecurrent')
+        max_charge_current_state_topic = input(f"Enter MQTT max charge current state topic for Virtual Battery {i} (current: {current_max_charge_current_state_topic}): ")
+        config.set(virtual_battery_section, 'maxchargecurrentstatetopic', max_charge_current_state_topic if max_charge_current_state_topic else current_max_charge_current_state_topic)
+
+        current_max_charge_voltage_state_topic = battery_data_from_file.get('maxchargevoltagestatetopic', 'path/to/mqtt/battery/maxchargevoltage')
+        max_charge_voltage_state_topic = input(f"Enter MQTT max charge voltage state topic for Virtual Battery {i} (current: {current_max_charge_voltage_state_topic}): ")
+        config.set(virtual_battery_section, 'maxchargevoltagestatetopic', max_charge_voltage_state_topic if max_charge_voltage_state_topic else current_max_charge_voltage_state_topic)
+
+        current_max_discharge_current_state_topic = battery_data_from_file.get('maxdischargecurrentstatetopic', 'path/to/mqtt/battery/maxdischargecurrent')
+        max_discharge_current_state_topic = input(f"Enter MQTT max discharge current state topic for Virtual Battery {i} (current: {current_max_discharge_current_state_topic}): ")
+        config.set(virtual_battery_section, 'maxdischargecurrentstatetopic', max_discharge_current_state_topic if max_discharge_current_state_topic else current_max_discharge_current_state_topic)
+
+        current_soc_state_topic = battery_data_from_file.get('socstatetopic', 'path/to/mqtt/battery/soc')
+        soc_state_topic = input(f"Enter MQTT SOC state topic for Virtual Battery {i} (current: {current_soc_state_topic}): ")
+        config.set(virtual_battery_section, 'socstatetopic', soc_state_topic if soc_state_topic else current_soc_state_topic)
+
+        current_soh_state_topic = battery_data_from_file.get('sohstatetopic', 'path/to/mqtt/battery/soh')
+        soh_state_topic = input(f"Enter MQTT SOH state topic for Virtual Battery {i} (current: {current_soh_state_topic}): ")
+        config.set(virtual_battery_section, 'sohstatetopic', soh_state_topic if soh_state_topic else current_soh_state_topic)
+
+
+    if not config.has_section('MQTT'):
+        config.add_section('MQTT')
+
+    config.set('MQTT', 'brokeraddress', broker_address)
+    config.set('MQTT', 'port', str(port))
+    config.set('MQTT', 'username', username if username is not None else '')
+    config.set('MQTT', 'password', password if password is not None else '')
+
+    print("\n--- Cleaning up unused sections ---")
+    all_sections_in_current_config = set(config.sections())
+    sections_to_remove = set()
+
+    expected_relay_modules = {f'Relay_Module_{i}' for i in range(1, new_num_relay_modules + 1)}
+    for section in all_sections_in_current_config:
+        if section.startswith('Relay_Module_') and section not in expected_relay_modules:
+            sections_to_remove.add(section)
+            try:
+                module_idx_to_remove = int(section.split('_')[2])
+                for sub_section in all_sections_in_current_config:
+                    if sub_section.startswith(f'switch_{module_idx_to_remove}_') or sub_section.startswith(f'input_{module_idx_to_remove}_'):
+                        sections_to_remove.add(sub_section)
+            except (ValueError, IndexError):
+                pass
+
+    for i in range(1, new_num_relay_modules + 1):
+        if config.has_section(f'Relay_Module_{i}'):
+            num_switches_for_module = config.getint(f'Relay_Module_{i}', 'numberofswitches', fallback=0)
+            expected_switches_for_this_module = {f'switch_{i}_{j}' for j in range(1, num_switches_for_module + 1)}
+            for section in all_sections_in_current_config:
+                if section.startswith(f'switch_{i}_') and section not in expected_switches_for_this_module:
+                    sections_to_remove.add(section)
+
+            num_inputs_for_module = config.getint(f'Relay_Module_{i}', 'numberofinputs', fallback=0)
+            expected_inputs_for_this_module = {f'input_{i}_{k}' for k in range(1, num_inputs_for_module + 1)}
+            for section in all_sections_in_current_config:
+                if section.startswith(f'input_{i}_') and section not in expected_inputs_for_this_module:
+                    sections_to_remove.add(section)
+
+    expected_temp_sensors = {f'Temp_Sensor_{i}' for i in range(1, num_temp_sensors + 1)}
+    for section in all_sections_in_current_config:
+        if section.startswith('Temp_Sensor_') and section not in expected_temp_sensors:
+            sections_to_remove.add(section)
+
+    expected_tank_sensors = {f'Tank_Sensor_{i}' for i in range(1, num_tank_sensors + 1)}
+    for section in all_sections_in_current_config:
+        if section.startswith('Tank_Sensor_') and section not in expected_tank_sensors:
+            sections_to_remove.add(section)
+
+    expected_virtual_batteries = {f'Virtual_Battery_{i}' for i in range(1, num_virtual_batteries + 1)}
+    for section in all_sections_in_current_config:
+        if section.startswith('Virtual_Battery_') and section not in expected_virtual_batteries:
+            sections_to_remove.add(section)
+
+    for section_to_remove in sections_to_remove:
+        if config.has_section(section_to_remove):
+            config.remove_section(section_to_remove)
+            print(f"Removed unused section: {section_to_remove}")
+
+    for section in all_sections_in_current_config:
+        if section.startswith('NEW_MODULE_'):
+            if config.has_section(section):
+                config.remove_section(section)
+                print(f"Removed placeholder section: {section}")
+
+
+    with open(config_path, 'w') as configfile:
+        config.write(configfile)
+    print(f"\nconfig successfully created/updated at {config_path}")
+
+    while True:
+        print("\n--- Service Options ---")
+        print("1) Install and activate service (system will reboot)")
+        print("2) Restart service (system will reboot)")
+        print("3) Quit and exit")
+
+        choice = input("Enter your choice (1, 2, or 3): ")
+
+        if choice == '1':
+            print("Running: /data/external-devices/setup install")
+            try:
+                subprocess.run(['/data/external-devices/setup', 'install'], check=True)
+                print("Service installed and activated successfully. Rebooting system...")
+                subprocess.run(['reboot'], check=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error installing service or rebooting: {e}")
+            except FileNotFoundError:
+                logger.error("Error: '/data/external-devices/setup' command not found. Please ensure the setup script exists.")
+            break
+        elif choice == '2':
+            print("Rebooting system...")
+            try:
+                subprocess.run(['reboot'], check=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error rebooting system: {e}")
+            except FileNotFoundError:
+                logger.error("Error: 'sudo' command not found. Please ensure sudo is in your PATH.")
+            break
+        elif choice == '3':
+            print("Exiting script.")
+            break
+        else:
+            print("Invalid choice. Please enter 1, 2, or 3.")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        logger.warning("Command line arguments for device type/section are deprecated in this version. Running main launcher directly.")
-    main()
+    create_or_edit_config()
