@@ -765,6 +765,7 @@ def create_or_edit_config():
     config = configparser.ConfigParser()
     file_exists = os.path.exists(config_path)
 
+    editable_devices = []
     existing_relay_modules_by_index = {}
     existing_switches_by_module_and_switch_idx = {}
     existing_inputs_by_module_and_input_idx = {}
