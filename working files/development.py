@@ -747,7 +747,7 @@ def create_or_edit_config():
 
             current_input_serial = input_data_from_file.get('serial', None)
             if current_input_serial is None:
-                current_input_serial = generate_serial()
+                current_input_serial = input_section
                 logger.debug(f"Generated new serial {current_input_serial} for Relay Module {i}, Input {k}.")
             config.set(input_section, 'serial', current_input_serial)
 
