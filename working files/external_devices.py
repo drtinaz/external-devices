@@ -959,8 +959,8 @@ def on_mqtt_message_original_global(client, userdata, msg):
     logger.debug(f"GLOBAL MQTT MESSAGE RECEIVED: Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
 
 # --- ADDED: Global MQTT Disconnect Callback ---
-def on_mqtt_disconnect(client, userdata, rc):
-    logger.warning(f"MQTT client disconnected with result code: {rc}")
+def on_mqtt_disconnect(client, userdata, rc, properties=None, reason=None): # Added properties and reason
+    logger.warning(f"MQTT client disconnected with result code: {rc}, Reason: {reason}")
     # You might want to add re-connection logic here if 'loop_forever' is not used,
     # or if you need to handle specific disconnect codes.
 
