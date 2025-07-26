@@ -997,11 +997,6 @@ def main():
         log_level = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR}.get(log_level_str, logging.INFO)
     logger.setLevel(log_level)
 
-    # --- START DEBUGGING OVERRIDE: Force DEBUG level ---
-    logger.setLevel(logging.DEBUG)
-    logger.debug("DEBUG_OVERRIDE: Logging level forced to DEBUG for troubleshooting.")
-    # --- END DEBUGGING OVERRIDE ---
-
 
     # --- Setup a single global MQTT client ---
     mqtt_config = config['MQTT'] if config.has_section('MQTT') else {}
