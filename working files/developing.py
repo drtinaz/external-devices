@@ -646,28 +646,28 @@ class DbusTankSensor(VeDbusService):
 
         if is_valid_topic(raw_topic):
             self.dbus_path_to_state_topic_map['/RawValue'] = raw_topic
-            logger.debug(f"TankSensor '{self['/CustomName']}' will use RawValue topic: {raw_topic}")
+            logger.debug(f"Tank '{self['/CustomName']}' will use RawValue topic: {raw_topic}")
         elif is_valid_topic(level_topic):
             self.is_level_direct = True
             self.dbus_path_to_state_topic_map['/Level'] = level_topic
-            logger.debug(f"TankSensor '{self['/CustomName']}' will use direct Level topic: {level_topic}")
+            logger.debug(f"Tank '{self['/CustomName']}' will use direct Level topic: {level_topic}")
         else:
-            logger.warning(f"TankSensor '{self['/CustomName']}': Neither RawValueStateTopic nor LevelStateTopic are valid. Tank level will not update from MQTT.")
+            logger.warning(f"Tank '{self['/CustomName']}': Neither RawValueStateTopic nor LevelStateTopic are valid. Tank level will not update from MQTT.")
         
         # Add other topics if they exist
         if is_valid_topic(self.device_config.get('TemperatureStateTopic')):
             self.dbus_path_to_state_topic_map['/Temperature'] = self.device_config.get('TemperatureStateTopic')
-            logger.debug(f"TankSensor '{self['/CustomName']}' also subscribing to Temperature topic: {self.device_config.get('TemperatureStateTopic')}")
+            logger.debug(f"Tank '{self['/CustomName']}' also subscribing to Temperature topic: {self.device_config.get('TemperatureStateTopic')}")
         if is_valid_topic(self.device_config.get('BatteryStateTopic')):
             self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
-            logger.debug(f"TankSensor '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
+            logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
 
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic: # double check validity
                 self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
                 self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTankSensor '{self['/CustomName']}' on topic: {topic}")
+                logger.debug(f"Added specific MQTT callback and subscribed for DbusTank '{self['/CustomName']}' on topic: {topic}")
 
 
         self.register()
@@ -681,13 +681,13 @@ class DbusTankSensor(VeDbusService):
     # Specific message handler for this tank sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusTankSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
+        logger.debug(f"DbusTank specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
             if not dbus_path: 
-                logger.debug(f"DbusTankSensor: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
+                logger.debug(f"DbusTank: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
                 return
 
             value = None
@@ -696,39 +696,39 @@ class DbusTankSensor(VeDbusService):
                 if isinstance(incoming_json, dict) and "value" in incoming_json:
                     value = float(incoming_json["value"])
                 else:
-                    logger.warning(f"DbusTankSensor: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
+                    logger.warning(f"DbusTank: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
                     return
             except json.JSONDecodeError:
                 try: value = float(payload_str)
                 except ValueError: 
-                    logger.warning(f"DbusTankSensor: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
+                    logger.warning(f"DbusTank: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
                     return
             
             if value is None: 
-                logger.warning(f"DbusTankSensor: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
+                logger.warning(f"DbusTank: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
                 return
             
             if dbus_path == '/RawValue' and not self.is_level_direct:
                 if self['/RawValue'] != value:
-                    logger.debug(f"DbusTankSensor: Updating /RawValue to {value} and recalculating for '{self['/CustomName']}'.")
+                    logger.debug(f"DbusTank: Updating /RawValue to {value} and recalculating for '{self['/CustomName']}'.")
                     GLib.idle_add(self._update_raw_value_and_recalculate, value)
                 else:
-                    logger.debug(f"DbusTankSensor: /RawValue already {value}. No update needed.")
+                    logger.debug(f"DbusTank: /RawValue already {value}. No update needed.")
             elif dbus_path == '/Level' and self.is_level_direct:
                 if 0.0 <= value <= 100.0 and self['/Level'] != round(value, 2):
-                    logger.debug(f"DbusTankSensor: Updating /Level to {value} and recalculating for '{self['/CustomName']}'.")
+                    logger.debug(f"DbusTank: Updating /Level to {value} and recalculating for '{self['/CustomName']}'.")
                     GLib.idle_add(self._update_level_and_recalculate, value)
                 else:
-                    logger.debug(f"DbusTankSensor: /Level already {value} or value out of range. No update needed.")
+                    logger.debug(f"DbusTank: /Level already {value} or value out of range. No update needed.")
             else: # For /Temperature or /BatteryVoltage
                 if self[dbus_path] != value:
-                    logger.debug(f"DbusTankSensor: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
+                    logger.debug(f"DbusTank: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
                     GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
                 else:
-                    logger.debug(f"DbusTankSensor: D-Bus path '{dbus_path}' already {value}. No update needed.")
+                    logger.debug(f"DbusTank: D-Bus path '{dbus_path}' already {value}. No update needed.")
 
         except Exception as e:
-            logger.error(f"Error processing MQTT message for TankSensor {self.service_name} on topic {msg.topic}: {e}")
+            logger.error(f"Error processing MQTT message for Tank {self.service_name} on topic {msg.topic}: {e}")
             traceback.print_exc()
 
     def _update_raw_value_and_recalculate(self, raw_value):
@@ -752,12 +752,12 @@ class DbusTankSensor(VeDbusService):
             level = ((raw_value - raw_empty) / (raw_full - raw_empty)) * 100.0
             level = max(0.0, min(100.0, level))
         self['/Level'] = round(level, 2)
-        logger.debug(f"TankSensor '{self['/CustomName']}' calculated Level: {self['/Level']}")
+        logger.debug(f"Tank '{self['/CustomName']}' calculated Level: {self['/Level']}")
 
     def _calculate_remaining_from_level(self):
         remaining = (self['/Level'] / 100.0) * self['/Capacity']
         self['/Remaining'] = round(remaining, 2)
-        logger.debug(f"TankSensor '{self['/CustomName']}' calculated Remaining: {self['/Remaining']}")
+        logger.debug(f"Tank '{self['/CustomName']}' calculated Remaining: {self['/Remaining']}")
 
 
     def handle_dbus_change(self, path, value):
@@ -768,7 +768,7 @@ class DbusTankSensor(VeDbusService):
         if key_name == 'FluidType':
             # Convert integer back to string for saving to config
             value_to_save = next((k for k, v in self.FLUID_TYPES.items() if v == value), 'fresh water')
-            logger.debug(f"TankSensor: Converting FluidType {value} to string '{value_to_save}' for saving.")
+            logger.debug(f"Tank: Converting FluidType {value} to string '{value_to_save}' for saving.")
 
         self.save_config_change(section_name, key_name, value_to_save)
 
@@ -790,7 +790,7 @@ class DbusTankSensor(VeDbusService):
                 config.write(f)
             logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
-            logger.error(f"Failed to save config change for TankSensor: {e}")
+            logger.error(f"Failed to save config change for Tank: {e}")
             traceback.print_exc()
 
     def update_dbus_from_mqtt(self, path, value):
@@ -1046,7 +1046,7 @@ def main():
     device_type_map = {
         'relay_module_': DbusSwitch, # This is the only prefix for a DbusSwitch parent
         'temp_sensor_': DbusTempSensor,
-        'tank_sensor_': DbusTankSensor,
+        'tank_sensor_': DbusTank,
         'virtual_battery_': DbusBattery,
         'input_': DbusDigitalInput
     }
