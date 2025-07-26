@@ -55,6 +55,7 @@ class DbusSwitch(VeDbusService):
         # Pass the bus instance to the parent constructor
         super().__init__(service_name, bus=bus, register=False) 
 
+        self.service_name = service_name # Store service_name for logging
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex') # This 'DeviceIndex' now comes from either Relay_Module_X or switch_X_Y
         self.mqtt_on_state_payload_raw = mqtt_on_state_payload
@@ -101,8 +102,15 @@ class DbusSwitch(VeDbusService):
         for output_data in output_configs:
             self.add_output(output_data)
 
-        self.register()
+        self.register() # Register all D-Bus paths at once
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
+
+        # Now, after registration, add specific MQTT callbacks and subscribe
+        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+            if topic:
+                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
+                self.mqtt_client.subscribe(topic)
+                logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {topic}")
 
     def add_output(self, output_data):
         # Construct the output prefix for D-Bus paths
@@ -114,12 +122,8 @@ class DbusSwitch(VeDbusService):
         if state_topic and 'path/to/mqtt' not in state_topic and command_topic and 'path/to/mqtt' not in command_topic:
             self.dbus_path_to_state_topic_map[dbus_state_path] = state_topic
             self.dbus_path_to_command_topic_map[dbus_state_path] = command_topic
-            
-            # Register specific callback for this topic
-            self.mqtt_client.message_callback_add(state_topic, self.on_mqtt_message_specific) 
-            # Subscribe to the topic
-            self.mqtt_client.subscribe(state_topic) # Explicitly subscribe here
-            logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {state_topic}")
+            # DO NOT SUBSCRIBE OR ADD CALLBACK HERE YET
+            # The subscription and callback addition is moved to __init__ after self.register()
         else:
             logger.warning(f"MQTT topics for {dbus_state_path} in DbusSwitch are invalid. Ignoring.")
 
@@ -281,6 +285,7 @@ class DbusDigitalInput(VeDbusService):
         self.device_config = device_config
         # The section name itself (e.g., 'input_1_1') is used for saving
         self.config_section_name = device_config.name 
+        self.service_name = service_name # Store service_name for logging
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
@@ -321,7 +326,9 @@ class DbusDigitalInput(VeDbusService):
         self.mqtt_on_payload = self.device_config.get('mqtt_on_state_payload', 'ON')
         self.mqtt_off_payload = self.device_config.get('mqtt_off_state_payload', 'OFF')
 
-        # Add this device's specific message callback to the global client
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
+        # Add this device's specific message callback to the global client after D-Bus registration
         if self.mqtt_state_topic and 'path/to/mqtt' not in self.mqtt_state_topic:
             self.mqtt_client.message_callback_add(self.mqtt_state_topic, self.on_mqtt_message_specific)
             self.mqtt_client.subscribe(self.mqtt_state_topic) # Explicitly subscribe here
@@ -329,7 +336,6 @@ class DbusDigitalInput(VeDbusService):
         else:
             logger.warning(f"No valid MqttStateTopic for '{self['/CustomName']}'. State will not update from MQTT.")
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this digital input
@@ -463,6 +469,7 @@ class DbusTempSensor(VeDbusService):
 
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
@@ -503,15 +510,16 @@ class DbusTempSensor(VeDbusService):
             if v is not None and v != '' and 'path/to/mqtt' not in v
         }
 
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
+            if topic: # double check validity
                 self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
                 self.mqtt_client.subscribe(topic) # Explicitly subscribe here
                 logger.debug(f"Added specific MQTT callback and subscribed for DbusTempSensor '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this temp sensor
@@ -600,6 +608,7 @@ class DbusTankSensor(VeDbusService):
         super().__init__(service_name, bus=bus, register=False)
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.19')
@@ -662,15 +671,16 @@ class DbusTankSensor(VeDbusService):
             self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
             logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
 
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic: # double check validity
                 self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
                 self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTank '{self['/CustomName']}' on topic: {topic}")
+                logger.debug(f"Added specific MQTT callback and subscribed for DbusTankSensor '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.") 
 
         # Initial calculations
@@ -681,13 +691,13 @@ class DbusTankSensor(VeDbusService):
     # Specific message handler for this tank sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        logger.debug(f"DbusTank specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
+        logger.debug(f"DbusTankSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
             topic = msg.topic
             dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
             if not dbus_path: 
-                logger.debug(f"DbusTank: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
+                logger.debug(f"DbusTankSensor: Received message on non-matching topic '{msg.topic}'. Not mapped for this sensor.")
                 return
 
             value = None
@@ -696,21 +706,21 @@ class DbusTankSensor(VeDbusService):
                 if isinstance(incoming_json, dict) and "value" in incoming_json:
                     value = float(incoming_json["value"])
                 else:
-                    logger.warning(f"DbusTank: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
+                    logger.warning(f"DbusTankSensor: JSON payload for topic '{topic}' does not contain 'value' key or is not a dict.")
                     return
             except json.JSONDecodeError:
                 try: value = float(payload_str)
                 except ValueError: 
-                    logger.warning(f"DbusTank: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
+                    logger.warning(f"DbusTankSensor: Payload '{payload_str}' for topic '{topic}' is not valid float or JSON.")
                     return
             
             if value is None: 
-                logger.warning(f"DbusTank: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
+                logger.warning(f"DbusTankSensor: Could not extract valid numerical value from payload '{payload_str}' for topic '{topic}'.")
                 return
             
             if dbus_path == '/RawValue' and not self.is_level_direct:
                 if self['/RawValue'] != value:
-                    logger.debug(f"DbusTank: Updating /RawValue to {value} and recalculating for '{self['/CustomName']}'.")
+                    logger.debug(f"DbusTankSensor: Updating /RawValue to {value} and recalculating for '{self['/CustomName']}'.")
                     GLib.idle_add(self._update_raw_value_and_recalculate, value)
                 else:
                     logger.debug(f"DbusTankSensor: /RawValue already {value}. No update needed.")
@@ -728,7 +738,7 @@ class DbusTankSensor(VeDbusService):
                     logger.debug(f"DbusTankSensor: D-Bus path '{dbus_path}' already {value}. No update needed.")
 
         except Exception as e:
-            logger.error(f"Error processing MQTT message for TankSensor {self.service_name} on topic {msg.topic}: {e}")
+            logger.error(f"Error processing MQTT message for Tank {self.service_name} on topic {msg.topic}: {e}")
             traceback.print_exc()
 
     def _update_raw_value_and_recalculate(self, raw_value):
@@ -752,12 +762,12 @@ class DbusTankSensor(VeDbusService):
             level = ((raw_value - raw_empty) / (raw_full - raw_empty)) * 100.0
             level = max(0.0, min(100.0, level))
         self['/Level'] = round(level, 2)
-        logger.debug(f"TankSensor '{self['/CustomName']}' calculated Level: {self['/Level']}")
+        logger.debug(f"Tank '{self['/CustomName']}' calculated Level: {self['/Level']}")
 
     def _calculate_remaining_from_level(self):
         remaining = (self['/Level'] / 100.0) * self['/Capacity']
         self['/Remaining'] = round(remaining, 2)
-        logger.debug(f"TankSensor '{self['/CustomName']}' calculated Remaining: {self['/Remaining']}")
+        logger.debug(f"Tank '{self['/CustomName']}' calculated Remaining: {self['/Remaining']}")
 
 
     def handle_dbus_change(self, path, value):
@@ -768,7 +778,7 @@ class DbusTankSensor(VeDbusService):
         if key_name == 'FluidType':
             # Convert integer back to string for saving to config
             value_to_save = next((k for k, v in self.FLUID_TYPES.items() if v == value), 'fresh water')
-            logger.debug(f"TankSensor: Converting FluidType {value} to string '{value_to_save}' for saving.")
+            logger.debug(f"Tank: Converting FluidType {value} to string '{value_to_save}' for saving.")
 
         self.save_config_change(section_name, key_name, value_to_save)
 
@@ -790,7 +800,7 @@ class DbusTankSensor(VeDbusService):
                 config.write(f)
             logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
-            logger.error(f"Failed to save config change for TankSensor: {e}")
+            logger.error(f"Failed to save config change for Tank: {e}")
             traceback.print_exc()
 
     def update_dbus_from_mqtt(self, path, value):
@@ -806,6 +816,7 @@ class DbusBattery(VeDbusService):
         super().__init__(service_name, bus=bus, register=False)
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.19')
@@ -845,6 +856,8 @@ class DbusBattery(VeDbusService):
         }
         self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
         
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic:
@@ -853,7 +866,6 @@ class DbusBattery(VeDbusService):
                 logger.debug(f"Added specific MQTT callback and subscribed for DbusBattery '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this battery
@@ -1099,6 +1111,10 @@ def main():
                 base_service_name_type = device_type_string.replace("_", "")
                 if base_service_name_type == 'relaymodule': base_service_name_type = 'switch' # Special case for service name
                 elif base_service_name_type == 'input': base_service_name_type = 'digitalinput' # Special case
+                # START MODIFICATION
+                elif base_service_name_type == 'tanksensor': base_service_name_type = 'tank'
+                elif base_service_name_type == 'tempsensor': base_service_name_type = 'temperature'
+                # END MODIFICATION
                 
                 service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
 
@@ -1108,8 +1124,8 @@ def main():
                     
                     mqtt_on_state = device_config.get('mqtt_on_state_payload', '1')
                     mqtt_off_state = device_config.get('mqtt_off_state_payload', '0')
-                    mqtt_on_cmd = device_config.get('MqttOnCommandPayload', '1')
-                    mqtt_off_cmd = device_config.get('MqttOffCommandPayload', '0')
+                    mqtt_on_cmd = device_config.get('mqtt_on_command_payload', '1')
+                    mqtt_off_cmd = device_config.get('mqtt_off_command_payload', '0')
 
                     num_switches = device_config.getint('NumberOfSwitches', 1)
                     for j in range(1, num_switches + 1):
