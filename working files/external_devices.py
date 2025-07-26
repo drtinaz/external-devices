@@ -136,6 +136,7 @@ class DbusSwitch(VeDbusService):
         self.add_path(f'{settings_prefix}/Type', 1, writeable=True)
         self.add_path(f'{settings_prefix}/ValidTypes', 7)
 
+    # ... (rest of DbusSwitch class methods) ...
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
         logger.debug(f"DbusSwitch specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
@@ -1111,9 +1112,10 @@ def main():
                 base_service_name_type = device_type_string.replace("_", "")
                 if base_service_name_type == 'relaymodule': base_service_name_type = 'switch' # Special case for service name
                 elif base_service_name_type == 'input': base_service_name_type = 'digitalinput' # Special case
-                # START MODIFICATION
+                # START MODIFICATION (Previous fix for temp/tank, now adding battery)
                 elif base_service_name_type == 'tanksensor': base_service_name_type = 'tank'
                 elif base_service_name_type == 'tempsensor': base_service_name_type = 'temperature'
+                elif base_service_name_type == 'virtualbattery': base_service_name_type = 'battery' # NEW FIX FOR BATTERY
                 # END MODIFICATION
                 
                 service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
