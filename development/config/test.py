@@ -64,7 +64,7 @@ def parse_mqtt_device_topic(topic):
         full_topic_base = module_serial
         component_id = shelly_match.group(2)
         component_type = 'relay'
-        logger.debug(f"Matched Shelly: Type=shelly, Serial={module_serial}, ComponentType={component_type}, ComponentID={component_id}, Base={full_topic_base}")
+        logger.debug(f"Matched Shelly: Type=shelly, Serial={module_serial}, ComponentType={component_type}, Component_ID={component_id}, Base={full_topic_base}")
         return 'shelly', module_serial, component_type, component_id, full_topic_base
 
     logger.debug("No Dingtian or Shelly pattern matched.")
@@ -560,26 +560,24 @@ def create_or_edit_config():
             config.set(relay_module_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
         else:
+            # Removed prompt for device instance, automatically assign existing or highest_existing + 1
             current_device_instance = module_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
-            device_instance_input = input(f"Enter device instance for Relay Module {i} (current: {current_device_instance}): ")
-            val = device_instance_input if device_instance_input else str(current_device_instance)
-            config.set(relay_module_section, 'deviceinstance', val)
+            config.set(relay_module_section, 'deviceinstance', str(current_device_instance))
 
         if is_new_module_slot:
             config.set(relay_module_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
         else:
+            # Removed prompt for device index, automatically assign existing or highest_existing + 1
             current_device_index = module_data_from_file.get('deviceindex', highest_existing_device_index + 1)
-            device_index_input = input(f"Enter device index for Relay Module {i} (current: {current_device_index}): ")
-            val = device_index_input if device_index_input else str(current_device_index)
-            config.set(relay_module_section, 'deviceindex', val)
+            config.set(relay_module_section, 'deviceindex', str(current_device_index))
 
         current_custom_name = module_data_from_file.get('customname', f'Relay Module {i}')
         if is_auto_configured_for_this_slot and module_info_from_discovery:
             config.set(relay_module_section, 'customname', f"{module_info_from_discovery['device_type'].capitalize()} Module {i} (Auto)")
         else:
-            custom_name = input(f"Enter custom name for Relay Module {i} (current: {current_custom_name}): ")
-            config.set(relay_module_section, 'customname', custom_name if custom_name else current_custom_name)
+            # Removed custom name prompt, auto-assign default
+            config.set(relay_module_section, 'customname', current_custom_name)
 
         current_num_switches_for_module = module_data_from_file.get('numberofswitches', 2)
         if is_auto_configured_for_this_slot and module_info_from_discovery:
@@ -707,18 +705,12 @@ def create_or_edit_config():
 
 
             current_switch_custom_name = switch_data_from_file.get('customname', f'switch {j}')
-            if is_auto_configured_for_this_slot:
-                config.set(switch_section, 'customname', current_switch_custom_name)
-            else:
-                switch_custom_name = input(f"Enter custom name for Relay Module {i}, switch {j} (current: {current_switch_custom_name}): ")
-                config.set(switch_section, 'customname', switch_custom_name if switch_custom_name else current_switch_custom_name)
+            # Removed custom name prompt, auto-assign default
+            config.set(switch_section, 'customname', current_switch_custom_name)
 
             current_switch_group = switch_data_from_file.get('group', f'Group{i}')
-            if is_auto_configured_for_this_slot:
-                config.set(switch_section, 'group', current_switch_group)
-            else:
-                switch_group = input(f"Enter group for Relay Module {i}, switch {j} (current: {current_switch_group}): ")
-                config.set(switch_section, 'group', switch_group if switch_group else current_switch_group)
+            # Removed group prompt, auto-assign default
+            config.set(switch_section, 'group', current_switch_group)
 
             current_mqtt_state_topic = switch_data_from_file.get('mqttstatetopic', auto_discovered_state_topic if auto_discovered_state_topic else 'path/to/mqtt/topic')
             if is_auto_configured_for_this_slot:
@@ -755,26 +747,24 @@ def create_or_edit_config():
                 config.set(input_section, 'deviceinstance', str(device_instance_counter))
                 device_instance_counter += 1
             else:
+                # Removed prompt for device instance, automatically assign existing or highest_existing + 1
                 current_device_instance = input_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
-                device_instance_input = input(f"Enter device instance for Relay Module {i}, Input {k} (current: {current_device_instance}): ")
-                val = device_instance_input if device_instance_input else str(current_device_instance)
-                config.set(input_section, 'deviceinstance', val)
+                config.set(input_section, 'deviceinstance', str(current_device_instance))
 
             if is_new_input_slot:
                 config.set(input_section, 'deviceindex', str(device_index_sequencer))
                 device_index_sequencer += 1
             else:
+                # Removed prompt for device index, automatically assign existing or highest_existing + 1
                 current_device_index = input_data_from_file.get('deviceindex', highest_existing_device_index + 1)
-                device_index_input = input(f"Enter device index for Relay Module {i}, Input {k} (current: {current_device_index}): ")
-                val = device_index_input if device_index_input else str(current_device_index)
-                config.set(input_section, 'deviceindex', val)
+                config.set(input_section, 'deviceindex', str(current_device_index))
 
             current_input_custom_name = input_data_from_file.get('customname', f'Input {k}')
             if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
                 config.set(input_section, 'customname', f"Dingtian Input {k} (Auto)")
             else:
-                input_custom_name = input(f"Enter custom name for Relay Module {i}, Input {k} (current: {current_input_custom_name}): ")
-                config.set(input_section, 'customname', input_custom_name if input_custom_name else current_input_custom_name)
+                # Removed custom name prompt, auto-assign default
+                config.set(input_section, 'customname', current_input_custom_name)
 
             auto_discovered_input_state_topic = None
             if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
@@ -837,22 +827,26 @@ def create_or_edit_config():
             config.set(temp_sensor_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
         else:
+            # Removed prompt for device instance, automatically assign existing or highest_existing + 1
             current_device_instance = sensor_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
-            device_instance_input = input(f"Enter device instance for Temperature Sensor {i} (current: {current_device_instance}): ")
-            config.set(temp_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+            config.set(temp_sensor_section, 'deviceinstance', str(current_device_instance))
 
         if is_new_sensor_slot:
             config.set(temp_sensor_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
         else:
+            # Removed prompt for device index, automatically assign existing or highest_existing + 1
             current_device_index = sensor_data_from_file.get('deviceindex', highest_existing_device_index + 1)
-            device_index_input = input(f"Enter device index for Temperature Sensor {i} (current: {current_device_index}): ")
-            config.set(temp_sensor_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+            config.set(temp_sensor_section, 'deviceindex', str(current_device_index))
 
 
         current_custom_name = sensor_data_from_file.get('customname', f'Temperature Sensor {i}')
-        custom_name = input(f"Enter custom name for Temperature Sensor {i} (current: {current_custom_name}): ")
-        config.set(temp_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+        if is_new_sensor_slot:
+            custom_name = input(f"Enter custom name for Temperature Sensor {i} (current: {current_custom_name}): ")
+            config.set(temp_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+        else:
+            config.set(temp_sensor_section, 'customname', current_custom_name)
+
 
         current_serial = sensor_data_from_file.get('serial', generate_serial())
         if not sensor_data_from_file.get('serial'):
@@ -904,22 +898,25 @@ def create_or_edit_config():
             config.set(tank_sensor_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
         else:
+            # Removed prompt for device instance, automatically assign existing or highest_existing + 1
             current_device_instance = sensor_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
-            device_instance_input = input(f"Enter device instance for Tank Sensor {i} (current: {current_device_instance}): ")
-            config.set(tank_sensor_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+            config.set(tank_sensor_section, 'deviceinstance', str(current_device_instance))
 
         if is_new_sensor_slot:
             config.set(tank_sensor_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
         else:
+            # Removed prompt for device index, automatically assign existing or highest_existing + 1
             current_device_index = sensor_data_from_file.get('deviceindex', highest_existing_device_index + 1)
-            device_index_input = input(f"Enter device index for Tank Sensor {i} (current: {current_device_index}): ")
-            config.set(tank_sensor_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+            config.set(tank_sensor_section, 'deviceindex', str(current_device_index))
 
 
         current_custom_name = sensor_data_from_file.get('customname', f'Tank Sensor {i}')
-        custom_name = input(f"Enter custom name for Tank Sensor {i} (current: {current_custom_name}): ")
-        config.set(tank_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+        if is_new_sensor_slot:
+            custom_name = input(f"Enter custom name for Tank Sensor {i} (current: {current_custom_name}): ")
+            config.set(tank_sensor_section, 'customname', custom_name if custom_name else current_custom_name)
+        else:
+            config.set(tank_sensor_section, 'customname', current_custom_name)
 
         current_serial = sensor_data_from_file.get('serial', generate_serial())
         if not sensor_data_from_file.get('serial'):
@@ -980,22 +977,22 @@ def create_or_edit_config():
             config.set(virtual_battery_section, 'deviceinstance', str(device_instance_counter))
             device_instance_counter += 1
         else:
+            # Removed prompt for device instance, automatically assign existing or highest_existing + 1
             current_device_instance = battery_data_from_file.get('deviceinstance', highest_existing_device_instance + 1)
-            device_instance_input = input(f"Enter device instance for Virtual Battery {i} (current: {current_device_instance}): ")
-            config.set(virtual_battery_section, 'deviceinstance', device_instance_input if device_instance_input else str(current_device_instance))
+            config.set(virtual_battery_section, 'deviceinstance', str(current_device_instance))
 
         if is_new_sensor_slot:
             config.set(virtual_battery_section, 'deviceindex', str(device_index_sequencer))
             device_index_sequencer += 1
         else:
+            # Removed prompt for device index, automatically assign existing or highest_existing + 1
             current_device_index = battery_data_from_file.get('deviceindex', highest_existing_device_index + 1)
-            device_index_input = input(f"Enter device index for Virtual Battery {i} (current: {current_device_index}): ")
-            config.set(virtual_battery_section, 'deviceindex', device_index_input if device_index_input else str(current_device_index))
+            config.set(virtual_battery_section, 'deviceindex', str(current_device_index))
 
 
         current_custom_name = battery_data_from_file.get('customname', f'Virtual Battery {i}')
-        custom_name = input(f"Enter custom name for Virtual Battery {i} (current: {current_custom_name}): ")
-        config.set(virtual_battery_section, 'customname', custom_name if custom_name else current_custom_name)
+        # Removed custom name prompt, auto-assign default
+        config.set(virtual_battery_section, 'customname', current_custom_name)
 
         current_serial = battery_data_from_file.get('serial', generate_serial())
         if not battery_data_from_file.get('serial'):
