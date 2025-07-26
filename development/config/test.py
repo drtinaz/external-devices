@@ -1205,7 +1205,7 @@ def create_or_edit_config():
                     remove_idx = int(remove_choice) - 1
                     if 0 <= remove_idx < len(removable_devices):
                         selected_section, _, original_idx, dev_type = removable_devices[remove_idx]
-                        confirm = input(f"Are you sure you want to remove {selected_section} ({editable_devices[remove_idx][1]})? (yes/no): ").lower()
+                        confirm = input(f"Are you sure you want to remove {selected_section} ({removable_devices[remove_idx][1]})? (yes/no): ").lower()
                         if confirm == 'yes':
                             config.remove_section(selected_section)
                             print(f"Removed section: {selected_section}")
