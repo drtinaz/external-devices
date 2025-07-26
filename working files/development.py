@@ -55,6 +55,7 @@ class DbusSwitch(VeDbusService):
         # Pass the bus instance to the parent constructor
         super().__init__(service_name, bus=bus, register=False) 
 
+        self.service_name = service_name # Store service_name for logging
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex') # This 'DeviceIndex' now comes from either Relay_Module_X or switch_X_Y
         self.mqtt_on_state_payload_raw = mqtt_on_state_payload
@@ -101,8 +102,15 @@ class DbusSwitch(VeDbusService):
         for output_data in output_configs:
             self.add_output(output_data)
 
-        self.register()
+        self.register() # Register all D-Bus paths at once
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
+
+        # Now, after registration, add specific MQTT callbacks and subscribe
+        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+            if topic:
+                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
+                self.mqtt_client.subscribe(topic)
+                logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {topic}")
 
     def add_output(self, output_data):
         # Construct the output prefix for D-Bus paths
@@ -114,12 +122,8 @@ class DbusSwitch(VeDbusService):
         if state_topic and 'path/to/mqtt' not in state_topic and command_topic and 'path/to/mqtt' not in command_topic:
             self.dbus_path_to_state_topic_map[dbus_state_path] = state_topic
             self.dbus_path_to_command_topic_map[dbus_state_path] = command_topic
-            
-            # Register specific callback for this topic
-            self.mqtt_client.message_callback_add(state_topic, self.on_mqtt_message_specific) 
-            # Subscribe to the topic
-            self.mqtt_client.subscribe(state_topic) # Explicitly subscribe here
-            logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {state_topic}")
+            # DO NOT SUBSCRIBE OR ADD CALLBACK HERE YET
+            # The subscription and callback addition is moved to __init__ after self.register()
         else:
             logger.warning(f"MQTT topics for {dbus_state_path} in DbusSwitch are invalid. Ignoring.")
 
@@ -281,6 +285,7 @@ class DbusDigitalInput(VeDbusService):
         self.device_config = device_config
         # The section name itself (e.g., 'input_1_1') is used for saving
         self.config_section_name = device_config.name 
+        self.service_name = service_name # Store service_name for logging
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
@@ -321,7 +326,9 @@ class DbusDigitalInput(VeDbusService):
         self.mqtt_on_payload = self.device_config.get('mqtt_on_state_payload', 'ON')
         self.mqtt_off_payload = self.device_config.get('mqtt_off_state_payload', 'OFF')
 
-        # Add this device's specific message callback to the global client
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
+        # Add this device's specific message callback to the global client after D-Bus registration
         if self.mqtt_state_topic and 'path/to/mqtt' not in self.mqtt_state_topic:
             self.mqtt_client.message_callback_add(self.mqtt_state_topic, self.on_mqtt_message_specific)
             self.mqtt_client.subscribe(self.mqtt_state_topic) # Explicitly subscribe here
@@ -329,7 +336,6 @@ class DbusDigitalInput(VeDbusService):
         else:
             logger.warning(f"No valid MqttStateTopic for '{self['/CustomName']}'. State will not update from MQTT.")
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this digital input
@@ -463,6 +469,7 @@ class DbusTempSensor(VeDbusService):
 
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         # General device settings
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
@@ -503,15 +510,16 @@ class DbusTempSensor(VeDbusService):
             if v is not None and v != '' and 'path/to/mqtt' not in v
         }
 
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
+            if topic: # double check validity
                 self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
                 self.mqtt_client.subscribe(topic) # Explicitly subscribe here
                 logger.debug(f"Added specific MQTT callback and subscribed for DbusTempSensor '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this temp sensor
@@ -600,6 +608,7 @@ class DbusTankSensor(VeDbusService):
         super().__init__(service_name, bus=bus, register=False)
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.19')
@@ -662,6 +671,8 @@ class DbusTankSensor(VeDbusService):
             self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
             logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
 
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic: # double check validity
@@ -670,7 +681,6 @@ class DbusTankSensor(VeDbusService):
                 logger.debug(f"Added specific MQTT callback and subscribed for DbusTankSensor '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.") 
 
         # Initial calculations
@@ -806,6 +816,7 @@ class DbusBattery(VeDbusService):
         super().__init__(service_name, bus=bus, register=False)
         self.device_config = device_config
         self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name # Store service_name for logging
 
         self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
         self.add_path('/Mgmt/ProcessVersion', '0.1.19')
@@ -845,6 +856,8 @@ class DbusBattery(VeDbusService):
         }
         self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
         
+        self.register() # Register D-Bus paths before subscribing to MQTT
+
         # Add this device's specific message callbacks to the global client for each topic
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic:
@@ -853,7 +866,6 @@ class DbusBattery(VeDbusService):
                 logger.debug(f"Added specific MQTT callback and subscribed for DbusBattery '{self['/CustomName']}' on topic: {topic}")
 
 
-        self.register()
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this battery
