@@ -1046,7 +1046,7 @@ def main():
     device_type_map = {
         'relay_module_': DbusSwitch, # This is the only prefix for a DbusSwitch parent
         'temp_sensor_': DbusTempSensor,
-        'tank_sensor_': DbusTank,
+        'tank_sensor_': DbusTankSensor,
         'virtual_battery_': DbusBattery,
         'input_': DbusDigitalInput
     }
