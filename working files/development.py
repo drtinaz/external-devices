@@ -1099,6 +1099,10 @@ def main():
                 base_service_name_type = device_type_string.replace("_", "")
                 if base_service_name_type == 'relaymodule': base_service_name_type = 'switch' # Special case for service name
                 elif base_service_name_type == 'input': base_service_name_type = 'digitalinput' # Special case
+                # START MODIFICATION
+                elif base_service_name_type == 'tanksensor': base_service_name_type = 'tank'
+                elif base_service_name_type == 'tempsensor': base_service_name_type = 'temperature'
+                # END MODIFICATION
                 
                 service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
 
