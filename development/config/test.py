@@ -22,6 +22,7 @@ highest_relay_module_idx_in_file = -1
 highest_temp_sensor_idx_in_file = -1
 highest_tank_sensor_idx_in_file = -1
 highest_virtual_battery_idx_in_file = -1
+highest_pv_charger_idx_in_file = -1
 discovered_modules_and_topics_global = {}
 
 
@@ -387,7 +388,7 @@ def configure_relay_module(config, existing_relay_modules_by_index, existing_swi
 
         current_input_serial = input_data_from_file.get('serial', None)
         if current_input_serial is None:
-            current_input_serial = f"input-{module_idx}-{k}-{generate_serial()[:6]}" # More descriptive serial
+            current_input_serial = f"input-{module_idx}-{k}"
             logger.debug(f"Generated new serial {current_input_serial} for Relay Module {module_idx}, Input {k}.")
         config.set(input_section, 'serial', current_input_serial)
 
@@ -762,14 +763,82 @@ def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, 
     config.set('MQTT', 'password', password if password is not None else '')
 
 
-def create_or_edit_config():
 
-    highest_existing_device_instance = -1
-    highest_existing_device_index = -1
-    highest_relay_module_idx_in_file = -1
-    highest_temp_sensor_idx_in_file = -1
-    highest_tank_sensor_idx_in_file = -1
-    highest_virtual_battery_idx_in_file = -1
+
+# --- PV Charger Configuration ---
+def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                         current_charger_idx=None, is_new_device_flow=True,
+                         highest_existing_device_instance=99, highest_existing_device_index=0):
+    """Configures a PV Charger device."""
+
+    if is_new_device_flow:
+        if existing_pv_chargers_by_index:
+            charger_idx = max(existing_pv_chargers_by_index.keys()) + 1
+        else:
+            charger_idx = 1
+        print(f"\n--- Adding New PV Charger (Charger Index: {charger_idx}) ---")
+    else:
+        charger_idx = current_charger_idx
+        print(f"\n--- Editing PV Charger (Charger Index: {charger_idx}) ---")
+
+    pv_charger_section = f'PV-Charger_{charger_idx}'
+    charger_data = existing_pv_chargers_by_index.get(charger_idx, {})
+
+    if not config.has_section(pv_charger_section):
+        config.add_section(pv_charger_section)
+
+    # Sequential instance and index
+    if is_new_device_flow:
+        config.set(pv_charger_section, 'deviceinstance', str(device_instance_counter))
+        device_instance_counter += 1
+    else:
+        current_device_instance = charger_data.get('deviceinstance', highest_existing_device_instance + 1)
+        config.set(pv_charger_section, 'deviceinstance', str(current_device_instance))
+
+    if is_new_device_flow:
+        config.set(pv_charger_section, 'deviceindex', str(device_index_sequencer))
+        device_index_sequencer += 1
+    else:
+        current_device_index = charger_data.get('deviceindex', highest_existing_device_index + 1)
+        config.set(pv_charger_section, 'deviceindex', str(current_device_index))
+
+    # Custom name
+    current_custom_name = charger_data.get('customname', f'PV Charger {charger_idx}')
+    custom_name = input(f"Enter custom name for PV Charger {charger_idx} (current: {current_custom_name}): ")
+    config.set(pv_charger_section, 'customname', custom_name or current_custom_name)
+
+    # Serial number (generated if not already assigned)
+    serial = charger_data.get('serial', generate_serial())
+    if not charger_data.get('serial'):
+        print(f"Generated new serial for PV Charger {charger_idx}: {serial}")
+    config.set(pv_charger_section, 'serial', serial)
+
+    # Required MQTT state topics
+    topic_keys = [
+        ('batterycurrentstatetopic', 'battery current'),
+        ('batteryvoltagestatetopic', 'battery voltage'),
+        ('maxchargecurrentstatetopic', 'max charge current'),
+        ('maxchargevoltagestatetopic', 'max charge voltage'),
+        ('pvvoltagestatetopic', 'PV voltage'),
+        ('pvpowerstatetopic', 'PV power'),
+        ('chargerstatetopic', 'charger state'),
+        ('loadstatetopic', 'load state')
+    ]
+
+    for key, label in topic_keys:
+        current_topic = charger_data.get(key, f'path/to/mqtt/{key}')
+        topic = input(f"Enter MQTT topic for {label} (current: {current_topic}): ")
+        config.set(pv_charger_section, key, topic or current_topic)
+
+    # Update Global count
+    if is_new_device_flow:
+        current_global_count = config.getint('Global', 'numberofpvchargers', fallback=0)
+        config.set('Global', 'numberofpvchargers', str(current_global_count + 1))
+
+    return device_instance_counter, device_index_sequencer
+
+
+def create_or_edit_config():
 
     # Declare    highest_existing_device_instance = -1
     highest_existing_device_index = -1
@@ -777,6 +846,7 @@ def create_or_edit_config():
     highest_temp_sensor_idx_in_file = -1
     highest_tank_sensor_idx_in_file = -1
     highest_virtual_battery_idx_in_file = -1
+    highest_pv_charger_idx_in_file = -1
     """
     Creates or edits a config file based on user input.
     The file will be located in /data/setupOptions/external-devices and named optionsSet.
@@ -796,6 +866,7 @@ def create_or_edit_config():
     existing_temp_sensors_by_index = {}
     existing_tank_sensors_by_index = {}
     existing_virtual_batteries_by_index = {}
+    existing_pv_chargers_by_index = {}
 
     highest_relay_module_idx_in_file = 0
     highest_temp_sensor_idx_in_file = 0
@@ -1007,8 +1078,7 @@ def create_or_edit_config():
         print("2) Add New Device")
         print("3) Edit Existing Device")
         print("4) Remove Existing Device")
-        print("5) Save Configuration and Exit")
-        print("6) Exit without Saving")
+        print("5) Exit")
 
         main_menu_choice = input("Enter your choice: ")
 
@@ -1031,7 +1101,7 @@ def create_or_edit_config():
                 print("2) Temperature Sensor")
                 print("3) Tank Sensor")
                 print("4) Battery (Virtual)")
-                print("5) MPPT (Placeholder)")
+                print("5) PV Charger")
                 print("6) Back to Main Menu")
 
                 add_device_choice = input("Enter type of device to add: ")
@@ -1085,7 +1155,7 @@ def create_or_edit_config():
                                     module_info = newly_discovered_modules_to_propose[module_serial]
                                     print(f"{i+1}) Device Type: {module_info['device_type'].capitalize()}, Module Serial: {module_serial}")
 
-                                selected_indices_input = input("Enter the numbers of the modules you want to auto-configure (e.g., 1,3,4 or 'all'): ")
+                                selected_indices_input = input("Enter the number of the module you want to auto-configure (enter to skip): ")
                                 selected_serials_for_auto_config = []
 
                                 if selected_indices_input.lower() == 'all':
@@ -1163,7 +1233,16 @@ def create_or_edit_config():
                     print("Configuration auto-saved.")
                     load_existing_config_data()
                 elif add_device_choice == '5':
-                    print("MPPT configuration is a placeholder and not yet implemented.")
+                    device_instance_counter, device_index_sequencer = configure_pv_charger(
+                        config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                        is_new_device_flow=True,
+                        highest_existing_device_instance=highest_existing_device_instance,
+                        highest_existing_device_index=highest_existing_device_index
+                    )
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
+                    load_existing_config_data()
                 elif add_device_choice == '6':
                     break
                 else:
@@ -1180,6 +1259,14 @@ def create_or_edit_config():
                 editable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
             for idx, data in existing_tank_sensors_by_index.items():
                 editable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
+            
+            for idx, data in existing_pv_chargers_by_index.items():
+                editable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
+
+            for idx, data in existing_pv_chargers_by_index.items():
+                removable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
             for idx, data in existing_virtual_batteries_by_index.items():
                 editable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
 
@@ -1221,8 +1308,17 @@ def create_or_edit_config():
                                 highest_existing_device_instance=highest_existing_device_instance,
                                 highest_existing_device_index=highest_existing_device_index
                             )
+                        
+                        elif dev_type == 'pv':
+                            device_instance_counter, device_index_sequencer = configure_pv_charger(
+                                config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                                current_charger_idx=original_idx, is_new_device_flow=False,
+                                highest_existing_device_instance=highest_existing_device_instance,
+                                highest_existing_device_index=highest_existing_device_index
+                            )
+
                         elif dev_type == 'battery':
-                            device_instance_counter, device_index_sequencer = configure_virtual_battery(
+                                device_instance_counter, device_index_sequencer = configure_virtual_battery(
                                 config, existing_virtual_batteries_by_index, device_instance_counter, device_index_sequencer,
                                 current_battery_idx=original_idx, is_new_device_flow=False,
                                 highest_existing_device_instance=highest_existing_device_instance,
@@ -1252,6 +1348,14 @@ def create_or_edit_config():
                 removable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
             for idx, data in existing_tank_sensors_by_index.items():
                 removable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
+            
+            for idx, data in existing_pv_chargers_by_index.items():
+                editable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
+
+            for idx, data in existing_pv_chargers_by_index.items():
+                removable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
             for idx, data in existing_virtual_batteries_by_index.items():
                 removable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
 
@@ -1297,6 +1401,11 @@ def create_or_edit_config():
                                 if current_global_tank_sensors > 0:
                                     config.set('Global', 'numberoftanksensors', str(current_global_tank_sensors - 1))
 
+                            elif dev_type == 'pv':
+                                current_global_pv = config.getint('Global', 'numberofpvchargers', fallback=0)
+                                if current_global_pv > 0:
+                                    config.set('Global', 'numberofpvchargers', str(current_global_pv - 1))
+
                             elif dev_type == 'battery':
                                 current_global_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=0)
                                 if current_global_virtual_batteries > 0:
@@ -1319,135 +1428,12 @@ def create_or_edit_config():
                 except ValueError:
                     print("Invalid input. Please enter a number.")
 
-        elif main_menu_choice == '5': # Save Configuration and Exit
-            print("\n--- Cleaning up unused sections ---")
-            all_sections_in_current_config = set(config.sections())
-            sections_to_remove = set()
-
-            # Identify orphaned switches/inputs
-            configured_relay_module_indices = {int(s.split('_')[2]) for s in all_sections_in_current_config if s.startswith('Relay_Module_')}
-            for section in all_sections_in_current_config:
-                if section.startswith('switch_'):
-                    try:
-                        module_idx = int(section.split('_')[1])
-                        if module_idx not in configured_relay_module_indices:
-                            sections_to_remove.add(section)
-                        else:
-                            # Check if the switch index is within the configured number of switches for its module
-                            if config.has_section(f'Relay_Module_{module_idx}'):
-                                num_switches_expected = config.getint(f'Relay_Module_{module_idx}', 'numberofswitches', fallback=0)
-                                switch_idx = int(section.split('_')[2])
-                                if switch_idx > num_switches_expected:
-                                    sections_to_remove.add(section)
-                    except (ValueError, IndexError):
-                        pass # Malformed section, ignore for now
-
-                elif section.startswith('input_'):
-                    try:
-                        module_idx = int(section.split('_')[1])
-                        if module_idx not in configured_relay_module_indices:
-                            sections_to_remove.add(section)
-                        else:
-                            # Check if the input index is within the configured number of inputs for its module
-                            if config.has_section(f'Relay_Module_{module_idx}'):
-                                num_inputs_expected = config.getint(f'Relay_Module_{module_idx}', 'numberofinputs', fallback=0)
-                                input_idx = int(section.split('_')[2])
-                                if input_idx > num_inputs_expected:
-                                    sections_to_remove.add(section)
-                    except (ValueError, IndexError):
-                        pass # Malformed section, ignore for now
-
-            # Identify orphaned modules/sensors/batteries that are not explicitly counted in Global
-            configured_relay_modules_sections = {f'Relay_Module_{i}' for i in existing_relay_modules_by_index.keys()}
-            for section in all_sections_in_current_config:
-                if section.startswith('Relay_Module_') and section not in configured_relay_modules_sections:
-                    sections_to_remove.add(section)
-
-            configured_temp_sensors_sections = {f'Temp_Sensor_{i}' for i in existing_temp_sensors_by_index.keys()}
-            for section in all_sections_in_current_config:
-                if section.startswith('Temp_Sensor_') and section not in configured_temp_sensors_sections:
-                    sections_to_remove.add(section)
-
-            configured_tank_sensors_sections = {f'Tank_Sensor_{i}' for i in existing_tank_sensors_by_index.keys()}
-            for section in all_sections_in_current_config:
-                if section.startswith('Tank_Sensor_') and section not in configured_tank_sensors_sections:
-                    sections_to_remove.add(section)
-
-            configured_virtual_batteries_sections = {f'Virtual_Battery_{i}' for i in existing_virtual_batteries_by_index.keys()}
-            for section in all_sections_in_current_config:
-                if section.startswith('Virtual_Battery_') and section not in configured_virtual_batteries_sections:
-                    sections_to_remove.add(section)
-
-            for section_to_remove in sections_to_remove:
-                if config.has_section(section_to_remove):
-                    config.remove_section(section_to_remove)
-                    print(f"Removed unused section: {section_to_remove}")
-
-            # Re-index remaining Relay Modules to be contiguous
-            reindexed_relay_modules = {}
-            new_idx = 1
-            # Note: We need to operate on the sections present in the config object itself, not the stale 'existing...' dicts
-            current_relay_indices_in_config = sorted([int(s.split('_')[2]) for s in config.sections() if s.startswith('Relay_Module_')])
-
-            for old_idx in current_relay_indices_in_config:
-                old_section = f'Relay_Module_{old_idx}'
-                new_section = f'Relay_Module_{new_idx}'
-                
-                # If the section needs re-indexing
-                if new_section != old_section:
-                    # Copy data to a temporary dictionary
-                    section_data = dict(config.items(old_section))
-                    # Remove the old section
-                    config.remove_section(old_section)
-                    # Add the new section and populate it
-                    config.add_section(new_section)
-                    for key, value in section_data.items():
-                        config.set(new_section, key, value)
-                    print(f"Reindexed {old_section} to {new_section}")
-
-                    # Re-index associated switches
-                    for old_switch_section in [s for s in config.sections() if s.startswith(f'switch_{old_idx}_')]:
-                        switch_idx = old_switch_section.split('_')[2]
-                        new_switch_section = f'switch_{new_idx}_{switch_idx}'
-                        switch_data = dict(config.items(old_switch_section))
-                        config.remove_section(old_switch_section)
-                        config.add_section(new_switch_section)
-                        for key, value in switch_data.items():
-                            config.set(new_switch_section, key, value)
-                        print(f"Reindexed {old_switch_section} to {new_switch_section}")
-
-                    # Re-index associated inputs
-                    for old_input_section in [s for s in config.sections() if s.startswith(f'input_{old_idx}_')]:
-                        input_idx = old_input_section.split('_')[2]
-                        new_input_section = f'input_{new_idx}_{input_idx}'
-                        input_data = dict(config.items(old_input_section))
-                        config.remove_section(old_input_section)
-                        config.add_section(new_input_section)
-                        for key, value in input_data.items():
-                            config.set(new_input_section, key, value)
-                        print(f"Reindexed {old_input_section} to {new_input_section}")
-
-                new_idx += 1
-
-
-            # Update Global counts to the new counts
-            config.set('Global', 'numberofmodules', str(len([s for s in config.sections() if s.startswith('Relay_Module_')])))
-            config.set('Global', 'numberoftempsensors', str(len([s for s in config.sections() if s.startswith('Temp_Sensor_')])))
-            config.set('Global', 'numberoftanksensors', str(len([s for s in config.sections() if s.startswith('Tank_Sensor_')])))
-            config.set('Global', 'numberofvirtualbatteries', str(len([s for s in config.sections() if s.startswith('Virtual_Battery_')])))
-
-
-            with open(config_path, 'w') as configfile:
-                config.write(configfile)
-            print(f"\nconfig successfully created/updated at {config_path}")
-            break # Exit main loop after saving
-
-        elif main_menu_choice == '6': # Exit without Saving
-            print("Exiting script without saving changes.")
+        elif main_menu_choice == '5': # Exit
+            print("Exiting script.")
             return
 
         else:
-            print("Invalid choice. Please enter a number between 1 and 6.")
+            print("Invalid choice. Please enter a number between 1 and 5.")
 
     while True:
         print("\n--- Service Options ---")
