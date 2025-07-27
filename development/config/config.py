@@ -22,6 +22,7 @@ highest_relay_module_idx_in_file = -1
 highest_temp_sensor_idx_in_file = -1
 highest_tank_sensor_idx_in_file = -1
 highest_virtual_battery_idx_in_file = -1
+highest_pv_charger_idx_in_file = -1
 discovered_modules_and_topics_global = {}
 
 
@@ -140,6 +141,38 @@ def discover_devices_via_mqtt(client):
     print(f"Found {len(discovered_modules_and_topics_global)} potential Dingtian/Shelly modules.")
     return discovered_modules_and_topics_global
 
+def service_options_menu():
+    print("\n--- Service Options ---")
+    print("1) Install and activate service")
+    print("2) Restart service (Populate configuration changes")
+    print("3) Quit and exit")
+
+    choice = input("Enter your choice (1, 2, or 3): ")
+
+    if choice == '1':
+        print("Running: /data/external-devices/setup install")
+        try:
+            subprocess.run(['/data/external-devices/setup', 'install'], check=True)
+            print("Service installed and activated successfully.")
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error installing service or rebooting: {e}")
+        except FileNotFoundError:
+            logger.error("Error: '/data/external-devices/setup' command not found. Please ensure the setup script exists.")
+    elif choice == '2':
+        print("Restarting service")
+        try:
+            subprocess.run(['svc', '-t', 'service/external_devices'], check=True)
+            print("Service restarted successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error restarting service: {e}")
+        except FileNotFoundError:
+            logger.error("Error: service not found.")
+    elif choice == '3':
+        print("Exiting script.")
+        exit()
+    else:
+        print("Invalid choice. Please enter 1, 2, or 3.")
 
 def configure_relay_module(config, existing_relay_modules_by_index, existing_switches_by_module_and_switch_idx,
                            existing_inputs_by_module_and_input_idx, device_instance_counter, device_index_sequencer,
@@ -737,15 +770,22 @@ def configure_virtual_battery(config, existing_virtual_batteries_by_index, devic
 
     return device_instance_counter, device_index_sequencer
 
-def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password):
+def configure_global_settings(config, existing_loglevel, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password):
     """Prompts user for global settings including MQTT broker details."""
     print("\n--- Global Settings Configuration ---")
 
     # FIX: Removed log level configuration as it's now hardcoded.
     # The `loglevel` parameter in the config file is no longer used by this script
     # but is kept for compatibility with the other script that reads it.
-    config.set('Global', 'loglevel', 'DEBUG')
-    print("Log level is permanently set to DEBUG.")
+
+    if not config.has_section('Global'):
+        config.add_section('Global')
+
+    loglevel = input(f"Set logging level to INFO or DEBUG, (current: {existing_loglevel if existing_loglevel else 'INFO'}): ") or (existing_loglevel if existing_loglevel else 'INFO')
+    config.set('Global', 'loglevel', loglevel)
+
+    # update existing log level after config change
+    existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
 
     # MQTT Broker Info
     broker_address, port, username, password = get_mqtt_broker_info(
@@ -762,14 +802,82 @@ def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, 
     config.set('MQTT', 'password', password if password is not None else '')
 
 
-def create_or_edit_config():
 
-    highest_existing_device_instance = -1
-    highest_existing_device_index = -1
-    highest_relay_module_idx_in_file = -1
-    highest_temp_sensor_idx_in_file = -1
-    highest_tank_sensor_idx_in_file = -1
-    highest_virtual_battery_idx_in_file = -1
+
+# --- PV Charger Configuration ---
+def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                         current_charger_idx=None, is_new_device_flow=True,
+                         highest_existing_device_instance=99, highest_existing_device_index=0):
+    """Configures a PV Charger device."""
+
+    if is_new_device_flow:
+        if existing_pv_chargers_by_index:
+            charger_idx = max(existing_pv_chargers_by_index.keys()) + 1
+        else:
+            charger_idx = 1
+        print(f"\n--- Adding New PV Charger (Charger Index: {charger_idx}) ---")
+    else:
+        charger_idx = current_charger_idx
+        print(f"\n--- Editing PV Charger (Charger Index: {charger_idx}) ---")
+
+    pv_charger_section = f'Pv_Charger_{charger_idx}'
+    charger_data = existing_pv_chargers_by_index.get(charger_idx, {})
+
+    if not config.has_section(pv_charger_section):
+        config.add_section(pv_charger_section)
+
+    # Sequential instance and index
+    if is_new_device_flow:
+        config.set(pv_charger_section, 'deviceinstance', str(device_instance_counter))
+        device_instance_counter += 1
+    else:
+        current_device_instance = charger_data.get('deviceinstance', highest_existing_device_instance + 1)
+        config.set(pv_charger_section, 'deviceinstance', str(current_device_instance))
+
+    if is_new_device_flow:
+        config.set(pv_charger_section, 'deviceindex', str(device_index_sequencer))
+        device_index_sequencer += 1
+    else:
+        current_device_index = charger_data.get('deviceindex', highest_existing_device_index + 1)
+        config.set(pv_charger_section, 'deviceindex', str(current_device_index))    
+
+    # Custom name
+    current_custom_name = charger_data.get('customname', f'PV Charger {charger_idx}')
+    custom_name = input(f"Enter custom name for PV Charger {charger_idx} (current: {current_custom_name}): ")
+    config.set(pv_charger_section, 'customname', custom_name or current_custom_name)
+
+    # Serial number (generated if not already assigned)
+    serial = charger_data.get('serial', generate_serial())
+    if not charger_data.get('serial'):
+        print(f"Generated new serial for PV Charger {charger_idx}: {serial}")
+    config.set(pv_charger_section, 'serial', serial)
+
+    # Required MQTT state topics
+    topic_keys = [
+        ('batterycurrentstatetopic', 'battery current'),
+        ('batteryvoltagestatetopic', 'battery voltage'),
+        ('maxchargecurrentstatetopic', 'max charge current'),
+        ('maxchargevoltagestatetopic', 'max charge voltage'),
+        ('pvvoltagestatetopic', 'PV voltage'),
+        ('pvpowerstatetopic', 'PV power'),
+        ('chargerstatetopic', 'charger state'),
+        ('loadstatetopic', 'load state')
+    ]
+
+    for key, label in topic_keys:
+        current_topic = charger_data.get(key, f'path/to/mqtt/{key}')
+        topic = input(f"Enter MQTT topic for {label} (current: {current_topic}): ")
+        config.set(pv_charger_section, key, topic or current_topic)
+
+    # Update Global count
+    if is_new_device_flow:
+        current_global_pv_chargers = config.getint('Global', 'numberofpvchargers', fallback=0)
+        config.set('Global', 'numberofpvchargers', str(current_global_pv_chargers + 1))
+
+    return device_instance_counter, device_index_sequencer
+
+
+def create_or_edit_config():
 
     # Declare    highest_existing_device_instance = -1
     highest_existing_device_index = -1
@@ -777,6 +885,7 @@ def create_or_edit_config():
     highest_temp_sensor_idx_in_file = -1
     highest_tank_sensor_idx_in_file = -1
     highest_virtual_battery_idx_in_file = -1
+    highest_pv_charger_idx_in_file = -1
     """
     Creates or edits a config file based on user input.
     The file will be located in /data/setupOptions/external-devices and named optionsSet.
@@ -796,11 +905,13 @@ def create_or_edit_config():
     existing_temp_sensors_by_index = {}
     existing_tank_sensors_by_index = {}
     existing_virtual_batteries_by_index = {}
+    existing_pv_chargers_by_index = {}
 
     highest_relay_module_idx_in_file = 0
     highest_temp_sensor_idx_in_file = 0
     highest_tank_sensor_idx_in_file = 0
     highest_virtual_battery_idx_in_file = 0
+    highest_pv_charger_idx_in_file = 0
 
     highest_existing_device_instance = 99
     highest_existing_device_index = 0
@@ -809,13 +920,16 @@ def create_or_edit_config():
     existing_mqtt_port = '1883'
     existing_mqtt_username = ''
     existing_mqtt_password = ''
+    existing_loglevel = ''
 
     def load_existing_config_data():
         # FIX: Make it clear we are modifying the global variables.
         nonlocal highest_existing_device_instance, highest_existing_device_index
         nonlocal highest_relay_module_idx_in_file, highest_temp_sensor_idx_in_file
         nonlocal highest_tank_sensor_idx_in_file, highest_virtual_battery_idx_in_file
+        nonlocal highest_pv_charger_idx_in_file
         nonlocal existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password
+        nonlocal existing_loglevel
 
         existing_relay_modules_by_index.clear()
         existing_switches_by_module_and_switch_idx.clear()
@@ -823,12 +937,14 @@ def create_or_edit_config():
         existing_temp_sensors_by_index.clear()
         existing_tank_sensors_by_index.clear()
         existing_virtual_batteries_by_index.clear()
+        existing_pv_chargers_by_index.clear()
         
         config.read(config_path)
 
         # FIX: Loglevel is no longer read from config for this script's operation.
         # It is set to DEBUG at the top.
 
+        existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
         existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
         existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
         existing_mqtt_username = config.get('MQTT', 'username', fallback='')
@@ -926,6 +1042,14 @@ def create_or_edit_config():
                 except (ValueError, IndexError):
                     logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
 
+            elif section.startswith('Pv_Charger_'):
+                try:
+                    pv_charger_idx = int(section.split('_')[2])
+                    highest_pv_charger_idx_in_file = max(highest_pv_charger_idx_in_file, pv_charger_idx)
+                    existing_pv_chargers_by_index[pv_charger_idx] = {key: val for key, val in config.items(section)}
+                except (ValueError, IndexError):
+                    logger.warning(f"Skipping malformed Pv_Charger section: {section}")
+
     if file_exists:
         print(f"Existing config file found at {config_path}.")
         while True:
@@ -981,8 +1105,10 @@ def create_or_edit_config():
         config.set('Global', 'numberoftanksensors', '0')
     if not config.has_option('Global', 'numberofvirtualbatteries'):
         config.set('Global', 'numberofvirtualbatteries', '0')
+    if not config.has_option('Global', 'numberofpvchargers'):
+        config.set('Global', 'numberofpvchargers', '0')
     # Set the loglevel in the config file itself
-    config.set('Global', 'loglevel', 'DEBUG')
+    config.set('Global', 'loglevel', 'INFO')
 
 
     # Ensure MQTT section exists for global settings
@@ -1012,8 +1138,9 @@ def create_or_edit_config():
         main_menu_choice = input("Enter your choice: ")
 
         if main_menu_choice == '1': # Handle Global Settings
-            configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
+            configure_global_settings(config, existing_loglevel, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
             # Reload global settings after modification
+            existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
             existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
             existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
             existing_mqtt_username = config.get('MQTT', 'username', fallback='')
@@ -1030,7 +1157,7 @@ def create_or_edit_config():
                 print("2) Temperature Sensor")
                 print("3) Tank Sensor")
                 print("4) Battery (Virtual)")
-                print("5) MPPT (Placeholder)")
+                print("5) PV Charger")
                 print("6) Back to Main Menu")
 
                 add_device_choice = input("Enter type of device to add: ")
@@ -1162,7 +1289,16 @@ def create_or_edit_config():
                     print("Configuration auto-saved.")
                     load_existing_config_data()
                 elif add_device_choice == '5':
-                    print("MPPT configuration is a placeholder and not yet implemented.")
+                    device_instance_counter, device_index_sequencer = configure_pv_charger(
+                        config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                        is_new_device_flow=True,
+                        highest_existing_device_instance=highest_existing_device_instance,
+                        highest_existing_device_index=highest_existing_device_index
+                    )
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
+                    load_existing_config_data()
                 elif add_device_choice == '6':
                     break
                 else:
@@ -1175,10 +1311,16 @@ def create_or_edit_config():
             editable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 editable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
+
             for idx, data in existing_temp_sensors_by_index.items():
                 editable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
+
             for idx, data in existing_tank_sensors_by_index.items():
                 editable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
+            
+            for idx, data in existing_pv_chargers_by_index.items():
+                editable_devices.append((f"Pv_Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
             for idx, data in existing_virtual_batteries_by_index.items():
                 editable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
 
@@ -1220,8 +1362,17 @@ def create_or_edit_config():
                                 highest_existing_device_instance=highest_existing_device_instance,
                                 highest_existing_device_index=highest_existing_device_index
                             )
+                        
+                        elif dev_type == 'pv':
+                            device_instance_counter, device_index_sequencer = configure_pv_charger(
+                                config, existing_pv_chargers_by_index, device_instance_counter, device_index_sequencer,
+                                current_charger_idx=original_idx, is_new_device_flow=False,
+                                highest_existing_device_instance=highest_existing_device_instance,
+                                highest_existing_device_index=highest_existing_device_index
+                            )
+
                         elif dev_type == 'battery':
-                            device_instance_counter, device_index_sequencer = configure_virtual_battery(
+                                device_instance_counter, device_index_sequencer = configure_virtual_battery(
                                 config, existing_virtual_batteries_by_index, device_instance_counter, device_index_sequencer,
                                 current_battery_idx=original_idx, is_new_device_flow=False,
                                 highest_existing_device_instance=highest_existing_device_instance,
@@ -1247,10 +1398,16 @@ def create_or_edit_config():
             removable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 removable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
+
             for idx, data in existing_temp_sensors_by_index.items():
                 removable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
+
             for idx, data in existing_tank_sensors_by_index.items():
                 removable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
+
+            for idx, data in existing_pv_chargers_by_index.items():
+                removable_devices.append((f"Pv_Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+
             for idx, data in existing_virtual_batteries_by_index.items():
                 removable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
 
@@ -1296,6 +1453,11 @@ def create_or_edit_config():
                                 if current_global_tank_sensors > 0:
                                     config.set('Global', 'numberoftanksensors', str(current_global_tank_sensors - 1))
 
+                            elif dev_type == 'pv':
+                                current_global_pv_chargers = config.getint('Global', 'numberofpvchargers', fallback=0)
+                                if current_global_pv_chargers > 0:
+                                    config.set('Global', 'numberofpvchargers', str(current_global_pv_chargers - 1))
+
                             elif dev_type == 'battery':
                                 current_global_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=0)
                                 if current_global_virtual_batteries > 0:
@@ -1319,45 +1481,12 @@ def create_or_edit_config():
                     print("Invalid input. Please enter a number.")
 
         elif main_menu_choice == '5': # Exit
-            print("Exiting script.")
+            service_options_menu()
             return
 
         else:
             print("Invalid choice. Please enter a number between 1 and 5.")
-
-    while True:
-        print("\n--- Service Options ---")
-        print("1) Install and activate service (system will reboot)")
-        print("2) Restart service (system will reboot)")
-        print("3) Quit and exit")
-
-        choice = input("Enter your choice (1, 2, or 3): ")
-
-        if choice == '1':
-            print("Running: /data/external-devices/setup install")
-            try:
-                subprocess.run(['/data/external-devices/setup', 'install'], check=True)
-                print("Service installed and activated successfully. Rebooting system...")
-                subprocess.run(['reboot'], check=True)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Error installing service or rebooting: {e}")
-            except FileNotFoundError:
-                logger.error("Error: '/data/external-devices/setup' command not found. Please ensure the setup script exists.")
-            break
-        elif choice == '2':
-            print("Rebooting system...")
-            try:
-                subprocess.run(['reboot'], check=True)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Error rebooting system: {e}")
-            except FileNotFoundError:
-                logger.error("Error: 'sudo' command not found. Please ensure sudo is in your PATH.")
-            break
-        elif choice == '3':
-            print("Exiting script.")
-            break
-        else:
-            print("Invalid choice. Please enter 1, 2, or 3.")
+            
 
 if __name__ == "__main__":
     create_or_edit_config()
