@@ -781,7 +781,7 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         charger_idx = current_charger_idx
         print(f"\n--- Editing PV Charger (Charger Index: {charger_idx}) ---")
 
-    pv_charger_section = f'pv_charger_{charger_idx}'
+    pv_charger_section = f'Pv_Charger_{charger_idx}'
     charger_data = existing_pv_chargers_by_index.get(charger_idx, {})
 
     if not config.has_section(pv_charger_section):
@@ -1000,7 +1000,7 @@ def create_or_edit_config():
                 except (ValueError, IndexError):
                     logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
 
-            elif section.startswith('pv_charger_'):
+            elif section.startswith('Pv_Charger_'):
                 try:
                     pv_charger_idx = int(section.split('_')[2])
                     highest_pv_charger_idx_in_file = max(highest_pv_charger_idx_in_file, pv_charger_idx)
