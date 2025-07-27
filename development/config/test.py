@@ -738,15 +738,22 @@ def configure_virtual_battery(config, existing_virtual_batteries_by_index, devic
 
     return device_instance_counter, device_index_sequencer
 
-def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password):
+def configure_global_settings(config, existing_loglevel, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password):
     """Prompts user for global settings including MQTT broker details."""
     print("\n--- Global Settings Configuration ---")
 
     # FIX: Removed log level configuration as it's now hardcoded.
     # The `loglevel` parameter in the config file is no longer used by this script
     # but is kept for compatibility with the other script that reads it.
-    config.set('Global', 'loglevel', 'DEBUG')
-    print("Log level is permanently set to DEBUG.")
+
+    if not config.has_section('Global'):
+        config.add_section('Global')
+
+    loglevel = input(f"Set logging level to INFO or DEBUG, (current: {existing_loglevel if existing_loglevel else 'INFO'}): ") or (existing_loglevel if existing_loglevel else 'INFO')
+    config.set('Global', 'loglevel', loglevel)
+
+    # update existing log level after config change
+    existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
 
     # MQTT Broker Info
     broker_address, port, username, password = get_mqtt_broker_info(
@@ -881,6 +888,7 @@ def create_or_edit_config():
     existing_mqtt_port = '1883'
     existing_mqtt_username = ''
     existing_mqtt_password = ''
+    existing_loglevel = ''
 
     def load_existing_config_data():
         # FIX: Make it clear we are modifying the global variables.
@@ -889,6 +897,7 @@ def create_or_edit_config():
         nonlocal highest_tank_sensor_idx_in_file, highest_virtual_battery_idx_in_file
         nonlocal highest_pv_charger_idx_in_file
         nonlocal existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password
+        nonlocal existing_loglevel
 
         existing_relay_modules_by_index.clear()
         existing_switches_by_module_and_switch_idx.clear()
@@ -903,6 +912,7 @@ def create_or_edit_config():
         # FIX: Loglevel is no longer read from config for this script's operation.
         # It is set to DEBUG at the top.
 
+        existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
         existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
         existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
         existing_mqtt_username = config.get('MQTT', 'username', fallback='')
@@ -1096,8 +1106,9 @@ def create_or_edit_config():
         main_menu_choice = input("Enter your choice: ")
 
         if main_menu_choice == '1': # Handle Global Settings
-            configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
+            configure_global_settings(config, existing_loglevel, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
             # Reload global settings after modification
+            existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
             existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
             existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
             existing_mqtt_username = config.get('MQTT', 'username', fallback='')
