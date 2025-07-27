@@ -162,7 +162,7 @@ def service_options_menu():
     elif choice == '2':
         print("Restarting service")
         try:
-            subprocess.run(['svc', '-t', 'service/external_devices'], check=True)
+            subprocess.run(['svc', '-t', '/service/external_devices'], check=True)
             print("Service restarted successfully.")
         except subprocess.CalledProcessError as e:
             logger.error(f"Error restarting service: {e}")
