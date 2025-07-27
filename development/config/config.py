@@ -10,7 +10,7 @@ import logging
 import sys
 
 # FIX: Set logging level directly to DEBUG.
-logging.basicConfig(level=logging.DEBUG, stream=sys.stdout,
+logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
