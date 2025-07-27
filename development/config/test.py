@@ -781,7 +781,7 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         charger_idx = current_charger_idx
         print(f"\n--- Editing PV Charger (Charger Index: {charger_idx}) ---")
 
-    pv_charger_section = f'PV-Charger_{charger_idx}'
+    pv_charger_section = f'pv_charger_{charger_idx}'
     charger_data = existing_pv_chargers_by_index.get(charger_idx, {})
 
     if not config.has_section(pv_charger_section):
@@ -800,7 +800,7 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         device_index_sequencer += 1
     else:
         current_device_index = charger_data.get('deviceindex', highest_existing_device_index + 1)
-        config.set(pv_charger_section, 'deviceindex', str(current_device_index))
+        config.set(pv_charger_section, 'deviceindex', str(current_device_index))    
 
     # Custom name
     current_custom_name = charger_data.get('customname', f'PV Charger {charger_idx}')
@@ -832,8 +832,8 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
 
     # Update Global count
     if is_new_device_flow:
-        current_global_count = config.getint('Global', 'numberofpvchargers', fallback=0)
-        config.set('Global', 'numberofpvchargers', str(current_global_count + 1))
+        current_global_pv_chargers = config.getint('Global', 'numberofpvchargers', fallback=0)
+        config.set('Global', 'numberofpvchargers', str(current_global_pv_chargers + 1))
 
     return device_instance_counter, device_index_sequencer
 
@@ -872,6 +872,7 @@ def create_or_edit_config():
     highest_temp_sensor_idx_in_file = 0
     highest_tank_sensor_idx_in_file = 0
     highest_virtual_battery_idx_in_file = 0
+    highest_pv_charger_idx_in_file = 0
 
     highest_existing_device_instance = 99
     highest_existing_device_index = 0
@@ -886,6 +887,7 @@ def create_or_edit_config():
         nonlocal highest_existing_device_instance, highest_existing_device_index
         nonlocal highest_relay_module_idx_in_file, highest_temp_sensor_idx_in_file
         nonlocal highest_tank_sensor_idx_in_file, highest_virtual_battery_idx_in_file
+        nonlocal highest_pv_charger_idx_in_file
         nonlocal existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password
 
         existing_relay_modules_by_index.clear()
@@ -894,6 +896,7 @@ def create_or_edit_config():
         existing_temp_sensors_by_index.clear()
         existing_tank_sensors_by_index.clear()
         existing_virtual_batteries_by_index.clear()
+        existing_pv_chargers_by_index.clear()
         
         config.read(config_path)
 
@@ -997,6 +1000,14 @@ def create_or_edit_config():
                 except (ValueError, IndexError):
                     logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
 
+            elif section.startswith('pv_harger_'):
+                try:
+                    pv_charger_idx = int(section.split('_')[2])
+                    highest_pv_charger_idx_in_file = max(highest_pv_charger_idx_in_file, pv_charger_idx)
+                    existing_pv_chargers_by_index[pv_charger_idx] = {key: val for key, val in config.items(section)}
+                except (ValueError, IndexError):
+                    logger.warning(f"Skipping malformed Pv_Charger section: {section}")
+
     if file_exists:
         print(f"Existing config file found at {config_path}.")
         while True:
@@ -1052,8 +1063,10 @@ def create_or_edit_config():
         config.set('Global', 'numberoftanksensors', '0')
     if not config.has_option('Global', 'numberofvirtualbatteries'):
         config.set('Global', 'numberofvirtualbatteries', '0')
+    if not config.has_option('Global', 'numberofpvchargers'):
+        config.set('Global', 'numberofpvchargers', '0')
     # Set the loglevel in the config file itself
-    config.set('Global', 'loglevel', 'DEBUG')
+    config.set('Global', 'loglevel', 'INFO')
 
 
     # Ensure MQTT section exists for global settings
@@ -1255,17 +1268,15 @@ def create_or_edit_config():
             editable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 editable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
+
             for idx, data in existing_temp_sensors_by_index.items():
                 editable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
+
             for idx, data in existing_tank_sensors_by_index.items():
                 editable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
             
             for idx, data in existing_pv_chargers_by_index.items():
-                editable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
-
-
-            for idx, data in existing_pv_chargers_by_index.items():
-                removable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+                editable_devices.append((f"pv_charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
 
             for idx, data in existing_virtual_batteries_by_index.items():
                 editable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
@@ -1344,17 +1355,15 @@ def create_or_edit_config():
             removable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 removable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
+
             for idx, data in existing_temp_sensors_by_index.items():
                 removable_devices.append((f"Temp_Sensor_{idx}", data.get('customname', f'Temperature Sensor {idx}'), idx, 'temp'))
+
             for idx, data in existing_tank_sensors_by_index.items():
                 removable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
-            
-            for idx, data in existing_pv_chargers_by_index.items():
-                editable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
-
 
             for idx, data in existing_pv_chargers_by_index.items():
-                removable_devices.append((f"PV-Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+                removable_devices.append((f"Pv_Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
 
             for idx, data in existing_virtual_batteries_by_index.items():
                 removable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
@@ -1402,9 +1411,9 @@ def create_or_edit_config():
                                     config.set('Global', 'numberoftanksensors', str(current_global_tank_sensors - 1))
 
                             elif dev_type == 'pv':
-                                current_global_pv = config.getint('Global', 'numberofpvchargers', fallback=0)
-                                if current_global_pv > 0:
-                                    config.set('Global', 'numberofpvchargers', str(current_global_pv - 1))
+                                current_global_pv_chargers = config.getint('Global', 'numberofpvchargers', fallback=0)
+                                if current_global_pv_chargers > 0:
+                                    config.set('Global', 'numberofpvchargers', str(current_global_pv_chargers - 1))
 
                             elif dev_type == 'battery':
                                 current_global_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=0)
