@@ -83,6 +83,7 @@ def on_connect(client, userdata, flags, rc):
     print(f"Connected to MQTT broker with result code {rc}")
     client.subscribe("#")
     print("Subscribed to '#' for device discovery, will filter for 'dingtian' or 'shelly' in topics.")
+    print("Please wait....Listening for devices....")
 
 def on_message(client, userdata, msg):
     """Callback for when a PUBLISH message is received from the server."""
@@ -442,7 +443,7 @@ def configure_relay_module(config, existing_relay_modules_by_index, existing_swi
 
         current_input_custom_name = input_data_from_file.get('customname', f'Input {k}')
         if is_auto_configured_for_this_slot and module_info_from_discovery and module_info_from_discovery['device_type'] == 'dingtian':
-            config.set(input_section, 'customname', f"Dingtian Input {k} (Auto)")
+            config.set(input_section, 'customname', current_input_serial)
         else:
             config.set(input_section, 'customname', input(f"Enter custom name for Input {k} (current: {current_input_custom_name}): ") or current_input_custom_name)
 
@@ -1211,19 +1212,20 @@ def create_or_edit_config():
                                     module_info = newly_discovered_modules_to_propose[module_serial]
                                     print(f"{i+1}) Device Type: {module_info['device_type'].capitalize()}, Module Serial: {module_serial}")
 
-                                selected_indices_input = input("Enter the number of the module you want to auto-configure (enter to skip): ")
+                                selected_indices_input = input("Enter the number of the module you want to auto-configure (e.g., 1,3 or 'all'; enter to skip): ")
                                 selected_serials_for_auto_config = []
 
                                 if selected_indices_input.lower() == 'all':
                                     selected_serials_for_auto_config = discovered_module_serials_list
                                 else:
                                     try:
-                                        indices = [int(x.strip()) - 1 for x in selected_indices_input.split(',')]
-                                        for idx in indices:
-                                            if 0 <= idx < len(discovered_module_serials_list):
-                                                selected_serials_for_auto_config.append(discovered_module_serials_list[idx])
-                                            else:
-                                                print(f"Warning: Invalid selection number {idx+1} ignored.")
+                                        if selected_indices_input:
+                                            indices = [int(x.strip()) - 1 for x in selected_indices_input.split(',')]
+                                            for idx in indices:
+                                                if 0 <= idx < len(discovered_module_serials_list):
+                                                    selected_serials_for_auto_config.append(discovered_module_serials_list[idx])
+                                                else:
+                                                    print(f"Warning: Invalid selection number {idx+1} ignored.")
                                     except ValueError:
                                         print("Invalid input for selection. No specific modules selected for auto-configuration.")
 
@@ -1242,18 +1244,57 @@ def create_or_edit_config():
                     else:
                         print("\nSkipping MQTT discovery for auto-configuration.")
 
-                    device_instance_counter, device_index_sequencer = configure_relay_module(
-                        config, existing_relay_modules_by_index, existing_switches_by_module_and_switch_idx,
-                        existing_inputs_by_module_and_input_idx, device_instance_counter, device_index_sequencer,
-                        auto_configured_serials_to_info, is_new_device_flow=True,
-                        highest_existing_device_instance=highest_existing_device_instance,
-                        highest_existing_device_index=highest_existing_device_index
-                    )
-                    # Auto-save and reload existing data after adding a new device
-                    with open(config_path, 'w') as configfile:
-                        config.write(configfile)
-                    print("Configuration auto-saved.")
-                    load_existing_config_data()
+                    # --- FIX STARTS HERE ---
+                    # If any modules were selected for auto-configuration, loop and add them all.
+                    if auto_configured_serials_to_info:
+                        print("\n--- Processing Staged Auto-Configuration for All Selected Modules ---")
+                        
+                        # Create a list of items to iterate over. This is safer as the state will be reloaded in the loop.
+                        serials_to_process = list(auto_configured_serials_to_info.items())
+
+                        for serial, info in serials_to_process:
+                            print(f"\nAuto-configuring discovered module with serial: {serial}...")
+                            
+                            # Pass a dictionary containing only the current module to the configuration function.
+                            # This ensures the function processes this specific module.
+                            single_module_dict = {serial: info}
+                            
+                            device_instance_counter, device_index_sequencer = configure_relay_module(
+                                config, existing_relay_modules_by_index, existing_switches_by_module_and_switch_idx,
+                                existing_inputs_by_module_and_input_idx, device_instance_counter, device_index_sequencer,
+                                single_module_dict, is_new_device_flow=True, 
+                                highest_existing_device_instance=highest_existing_device_instance,
+                                highest_existing_device_index=highest_existing_device_index
+                            )
+                            
+                            # After adding each module, save the file and reload the configuration data.
+                            # This is crucial for the next iteration to have the correct state.
+                            with open(config_path, 'w') as configfile:
+                                config.write(configfile)
+                            print(f"Module with serial {serial} configured and saved.")
+                            load_existing_config_data()
+
+                        print("\n--- Finished processing all selected auto-discovered modules. ---")
+                        auto_configured_serials_to_info.clear() # Clear the staged items.
+                    
+                    # If the user did not use discovery or did not select any modules, 
+                    # proceed with the manual configuration for a single new module.
+                    else:
+                        print("\nNo modules selected for auto-install. Proceeding with manual configuration for a single module.")
+                        device_instance_counter, device_index_sequencer = configure_relay_module(
+                            config, existing_relay_modules_by_index, existing_switches_by_module_and_switch_idx,
+                            existing_inputs_by_module_and_input_idx, device_instance_counter, device_index_sequencer,
+                            auto_configured_serials_to_info, # This will be an empty dict
+                            is_new_device_flow=True,
+                            highest_existing_device_instance=highest_existing_device_instance,
+                            highest_existing_device_index=highest_existing_device_index
+                        )
+                        # Auto-save and reload data after adding the new device
+                        with open(config_path, 'w') as configfile:
+                            config.write(configfile)
+                        print("Configuration auto-saved.")
+                        load_existing_config_data()
+                    # --- FIX ENDS HERE ---
 
                 elif add_device_choice == '2':
                     device_instance_counter, device_index_sequencer = configure_temp_sensor(
