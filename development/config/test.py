@@ -1000,7 +1000,7 @@ def create_or_edit_config():
                 except (ValueError, IndexError):
                     logger.warning(f"Skipping malformed Virtual_Battery section: {section}")
 
-            elif section.startswith('pv_harger_'):
+            elif section.startswith('pv_charger_'):
                 try:
                     pv_charger_idx = int(section.split('_')[2])
                     highest_pv_charger_idx_in_file = max(highest_pv_charger_idx_in_file, pv_charger_idx)
@@ -1276,7 +1276,7 @@ def create_or_edit_config():
                 editable_devices.append((f"Tank_Sensor_{idx}", data.get('customname', f'Tank Sensor {idx}'), idx, 'tank'))
             
             for idx, data in existing_pv_chargers_by_index.items():
-                editable_devices.append((f"pv_charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
+                editable_devices.append((f"Pv_Charger_{idx}", data.get('customname', f'PV Charger {idx}'), idx, 'pv'))
 
             for idx, data in existing_virtual_batteries_by_index.items():
                 editable_devices.append((f"Virtual_Battery_{idx}", data.get('customname', f'Virtual Battery {idx}'), idx, 'battery'))
