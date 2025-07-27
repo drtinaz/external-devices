@@ -1457,8 +1457,8 @@ def create_or_edit_config():
 
     while True:
         print("\n--- Service Options ---")
-        print("1) Install and activate service (system will reboot)")
-        print("2) Restart service (system will reboot)")
+        print("1) Install and activate service")
+        print("2) Restart service (Populate configuration changes")
         print("3) Quit and exit")
 
         choice = input("Enter your choice (1, 2, or 3): ")
