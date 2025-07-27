@@ -9,13 +9,21 @@ import re
 import logging
 import sys
 
-# Configure logging for this script itself
-logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+# FIX: Set logging level directly to DEBUG.
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Global variable to store discovered topics and device info
+# --- Globals ---
+# These are loaded from the config file.
+highest_existing_device_instance = -1
+highest_existing_device_index = -1
+highest_relay_module_idx_in_file = -1
+highest_temp_sensor_idx_in_file = -1
+highest_tank_sensor_idx_in_file = -1
+highest_virtual_battery_idx_in_file = -1
 discovered_modules_and_topics_global = {}
+
 
 # --- Existing functions (unchanged) ---
 def generate_serial():
@@ -729,13 +737,15 @@ def configure_virtual_battery(config, existing_virtual_batteries_by_index, devic
 
     return device_instance_counter, device_index_sequencer
 
-def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password, current_loglevel_from_config):
-    """Prompts user for global settings including log level and MQTT broker details."""
+def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password):
+    """Prompts user for global settings including MQTT broker details."""
     print("\n--- Global Settings Configuration ---")
 
-    # Set log level
-    loglevel = input(f"Enter log level (options: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: {current_loglevel_from_config}): ") or current_loglevel_from_config
-    config.set('Global', 'loglevel', loglevel)
+    # FIX: Removed log level configuration as it's now hardcoded.
+    # The `loglevel` parameter in the config file is no longer used by this script
+    # but is kept for compatibility with the other script that reads it.
+    config.set('Global', 'loglevel', 'DEBUG')
+    print("Log level is permanently set to DEBUG.")
 
     # MQTT Broker Info
     broker_address, port, username, password = get_mqtt_broker_info(
@@ -753,6 +763,20 @@ def configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, 
 
 
 def create_or_edit_config():
+
+    highest_existing_device_instance = -1
+    highest_existing_device_index = -1
+    highest_relay_module_idx_in_file = -1
+    highest_temp_sensor_idx_in_file = -1
+    highest_tank_sensor_idx_in_file = -1
+    highest_virtual_battery_idx_in_file = -1
+
+    # Declare    highest_existing_device_instance = -1
+    highest_existing_device_index = -1
+    highest_relay_module_idx_in_file = -1
+    highest_temp_sensor_idx_in_file = -1
+    highest_tank_sensor_idx_in_file = -1
+    highest_virtual_battery_idx_in_file = -1
     """
     Creates or edits a config file based on user input.
     The file will be located in /data/setupOptions/external-devices and named optionsSet.
@@ -785,15 +809,25 @@ def create_or_edit_config():
     existing_mqtt_port = '1883'
     existing_mqtt_username = ''
     existing_mqtt_password = ''
-    current_loglevel_from_config = 'INFO'
 
     def load_existing_config_data():
-        nonlocal highest_relay_module_idx_in_file, highest_temp_sensor_idx_in_file, highest_tank_sensor_idx_in_file, highest_virtual_battery_idx_in_file
+        # FIX: Make it clear we are modifying the global variables.
         nonlocal highest_existing_device_instance, highest_existing_device_index
-        nonlocal existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password, current_loglevel_from_config
+        nonlocal highest_relay_module_idx_in_file, highest_temp_sensor_idx_in_file
+        nonlocal highest_tank_sensor_idx_in_file, highest_virtual_battery_idx_in_file
+        nonlocal existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password
 
+        existing_relay_modules_by_index.clear()
+        existing_switches_by_module_and_switch_idx.clear()
+        existing_inputs_by_module_and_input_idx.clear()
+        existing_temp_sensors_by_index.clear()
+        existing_tank_sensors_by_index.clear()
+        existing_virtual_batteries_by_index.clear()
+        
         config.read(config_path)
-        current_loglevel_from_config = config.get('Global', 'loglevel', fallback='INFO')
+
+        # FIX: Loglevel is no longer read from config for this script's operation.
+        # It is set to DEBUG at the top.
 
         existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
         existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
@@ -905,7 +939,6 @@ def create_or_edit_config():
             if choice == '1':
                 load_existing_config_data()
                 print("Continuing to existing configuration.")
-                # Removed the direct prompt for global settings here.
                 break
             elif choice == '2':
                 confirm = input("Are you absolutely sure you want to overwrite the existing configuration file? This cannot be undone! (yes/no): ")
@@ -931,6 +964,7 @@ def create_or_edit_config():
     else:
         print(f"No existing config file found. A new one will be created at {config_path}.")
 
+
     # Initialize counters for new devices
     device_instance_counter = highest_existing_device_instance + 1
     device_index_sequencer = highest_existing_device_index + 1
@@ -947,6 +981,9 @@ def create_or_edit_config():
         config.set('Global', 'numberoftanksensors', '0')
     if not config.has_option('Global', 'numberofvirtualbatteries'):
         config.set('Global', 'numberofvirtualbatteries', '0')
+    # Set the loglevel in the config file itself
+    config.set('Global', 'loglevel', 'DEBUG')
+
 
     # Ensure MQTT section exists for global settings
     if not config.has_section('MQTT'):
@@ -966,7 +1003,7 @@ def create_or_edit_config():
 
     while True:
         print("\n--- Main Configuration Menu ---")
-        print("1) Global Settings") # New option
+        print("1) Global Settings")
         print("2) Add New Device")
         print("3) Edit Existing Device")
         print("4) Remove Existing Device")
@@ -976,16 +1013,18 @@ def create_or_edit_config():
         main_menu_choice = input("Enter your choice: ")
 
         if main_menu_choice == '1': # Handle Global Settings
-            configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password, current_loglevel_from_config)
+            configure_global_settings(config, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
             # Reload global settings after modification
-            current_loglevel_from_config = config.get('Global', 'loglevel', fallback='INFO')
             existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
             existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
             existing_mqtt_username = config.get('MQTT', 'username', fallback='')
             existing_mqtt_password = config.get('MQTT', 'password', fallback='')
+            # Auto-save after changing global settings
+            with open(config_path, 'w') as configfile:
+                config.write(configfile)
+            print("Configuration auto-saved.")
 
-
-        elif main_menu_choice == '2': # Add New Device (was 1)
+        elif main_menu_choice == '2': # Add New Device
             while True:
                 print("\n--- Add New Device ---")
                 print("1) Relay/IO Module")
@@ -1007,6 +1046,11 @@ def create_or_edit_config():
                         port = config.getint('MQTT', 'port', fallback=1883)
                         username = config.get('MQTT', 'username', fallback='')
                         password = config.get('MQTT', 'password', fallback='')
+
+                        if not broker_address:
+                            logger.error("\nMQTT Broker address is not set. Cannot perform discovery.")
+                            print("Please configure MQTT details in 'Global Settings' first.")
+                            continue
 
                         if username:
                             mqtt_client.username_pw_set(username, password)
@@ -1079,8 +1123,12 @@ def create_or_edit_config():
                         highest_existing_device_instance=highest_existing_device_instance,
                         highest_existing_device_index=highest_existing_device_index
                     )
-                    # Reload existing data after adding a new device
+                    # Auto-save and reload existing data after adding a new device
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
                     load_existing_config_data()
+
                 elif add_device_choice == '2':
                     device_instance_counter, device_index_sequencer = configure_temp_sensor(
                         config, existing_temp_sensors_by_index, device_instance_counter, device_index_sequencer,
@@ -1088,6 +1136,9 @@ def create_or_edit_config():
                         highest_existing_device_instance=highest_existing_device_instance,
                         highest_existing_device_index=highest_existing_device_index
                     )
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
                     load_existing_config_data()
                 elif add_device_choice == '3':
                     device_instance_counter, device_index_sequencer = configure_tank_sensor(
@@ -1096,6 +1147,9 @@ def create_or_edit_config():
                         highest_existing_device_instance=highest_existing_device_instance,
                         highest_existing_device_index=highest_existing_device_index
                     )
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
                     load_existing_config_data()
                 elif add_device_choice == '4':
                     device_instance_counter, device_index_sequencer = configure_virtual_battery(
@@ -1104,6 +1158,9 @@ def create_or_edit_config():
                         highest_existing_device_instance=highest_existing_device_instance,
                         highest_existing_device_index=highest_existing_device_index
                     )
+                    with open(config_path, 'w') as configfile:
+                        config.write(configfile)
+                    print("Configuration auto-saved.")
                     load_existing_config_data()
                 elif add_device_choice == '5':
                     print("MPPT configuration is a placeholder and not yet implemented.")
@@ -1112,8 +1169,10 @@ def create_or_edit_config():
                 else:
                     print("Invalid choice. Please select a valid option.")
 
-        elif main_menu_choice == '3': # Edit Existing Device (was 2)
-            # Edit existing device
+        elif main_menu_choice == '3': # Edit Existing Device
+            # Reload data to ensure we are editing the latest saved version.
+            load_existing_config_data()
+
             editable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 editable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
@@ -1169,8 +1228,14 @@ def create_or_edit_config():
                                 highest_existing_device_instance=highest_existing_device_instance,
                                 highest_existing_device_index=highest_existing_device_index
                             )
+
+                        # Save the configuration *after* the changes have been made.
+                        with open(config_path, 'w') as configfile:
+                            config.write(configfile)
+                        print("Configuration auto-saved after editing.")
+                        
                         load_existing_config_data() # Reload data after editing
-                        break # Go back to main menu
+                        break 
                     elif edit_idx == len(editable_devices):
                         break # Back to main menu
                     else:
@@ -1178,8 +1243,8 @@ def create_or_edit_config():
                 except ValueError:
                     print("Invalid input. Please enter a number.")
 
-        elif main_menu_choice == '4': # Remove Existing Device (was 3)
-            # Remove existing device
+        elif main_menu_choice == '4': # Remove Existing Device
+            load_existing_config_data() # Ensure we have the latest list of devices
             removable_devices = []
             for idx, data in existing_relay_modules_by_index.items():
                 removable_devices.append((f"Relay_Module_{idx}", data.get('customname', f'Relay Module {idx}'), idx, 'relay'))
@@ -1209,8 +1274,6 @@ def create_or_edit_config():
                         if confirm == 'yes':
                             config.remove_section(selected_section)
                             print(f"Removed section: {selected_section}")
-
-                            # Also remove associated switches/inputs if it's a relay module
                             if dev_type == 'relay':
                                 sections_to_remove_sub = []
                                 for section_name in config.sections():
@@ -1220,7 +1283,6 @@ def create_or_edit_config():
                                     config.remove_section(sub_section)
                                     print(f"Removed associated section: {sub_section}")
 
-                                # Decrement global numberofmodules
                                 current_global_modules = config.getint('Global', 'numberofmodules', fallback=0)
                                 if current_global_modules > 0:
                                     config.set('Global', 'numberofmodules', str(current_global_modules - 1))
@@ -1229,20 +1291,27 @@ def create_or_edit_config():
                                 current_global_temp_sensors = config.getint('Global', 'numberoftempsensors', fallback=0)
                                 if current_global_temp_sensors > 0:
                                     config.set('Global', 'numberoftempsensors', str(current_global_temp_sensors - 1))
+
                             elif dev_type == 'tank':
                                 current_global_tank_sensors = config.getint('Global', 'numberoftanksensors', fallback=0)
                                 if current_global_tank_sensors > 0:
                                     config.set('Global', 'numberoftanksensors', str(current_global_tank_sensors - 1))
+
                             elif dev_type == 'battery':
                                 current_global_virtual_batteries = config.getint('Global', 'numberofvirtualbatteries', fallback=0)
                                 if current_global_virtual_batteries > 0:
                                     config.set('Global', 'numberofvirtualbatteries', str(current_global_virtual_batteries - 1))
 
+                            # Auto-save after removal
+                            with open(config_path, 'w') as configfile:
+                                config.write(configfile)
+                            print("Configuration auto-saved after removal.")
+
                             load_existing_config_data() # Reload data after removal
-                            break # Go back to main menu after successful removal
+                            break 
                         else:
                             print("Removal cancelled.")
-                            break # Go back to main menu
+                            break
                     elif remove_idx == len(removable_devices):
                         break # Back to main menu
                     else:
@@ -1250,7 +1319,7 @@ def create_or_edit_config():
                 except ValueError:
                     print("Invalid input. Please enter a number.")
 
-        elif main_menu_choice == '5': # Save Configuration and Exit (was 4)
+        elif main_menu_choice == '5': # Save Configuration and Exit
             print("\n--- Cleaning up unused sections ---")
             all_sections_in_current_config = set(config.sections())
             sections_to_remove = set()
@@ -1317,46 +1386,51 @@ def create_or_edit_config():
             # Re-index remaining Relay Modules to be contiguous
             reindexed_relay_modules = {}
             new_idx = 1
-            sorted_relay_indices = sorted(existing_relay_modules_by_index.keys())
-            for old_idx in sorted_relay_indices:
+            # Note: We need to operate on the sections present in the config object itself, not the stale 'existing...' dicts
+            current_relay_indices_in_config = sorted([int(s.split('_')[2]) for s in config.sections() if s.startswith('Relay_Module_')])
+
+            for old_idx in current_relay_indices_in_config:
                 old_section = f'Relay_Module_{old_idx}'
                 new_section = f'Relay_Module_{new_idx}'
-                if config.has_section(old_section) and new_section != old_section:
-                    # Move options to new section
-                    for key, value in config.items(old_section):
-                        if not config.has_section(new_section):
-                            config.add_section(new_section)
-                        config.set(new_section, key, value)
+                
+                # If the section needs re-indexing
+                if new_section != old_section:
+                    # Copy data to a temporary dictionary
+                    section_data = dict(config.items(old_section))
+                    # Remove the old section
                     config.remove_section(old_section)
+                    # Add the new section and populate it
+                    config.add_section(new_section)
+                    for key, value in section_data.items():
+                        config.set(new_section, key, value)
                     print(f"Reindexed {old_section} to {new_section}")
 
-                    # Reindex associated switches and inputs
-                    for switch_key in list(existing_switches_by_module_and_switch_idx.keys()):
-                        if switch_key[0] == old_idx:
-                            old_switch_section = f'switch_{old_idx}_{switch_key[1]}'
-                            new_switch_section = f'switch_{new_idx}_{switch_key[1]}'
-                            if config.has_section(old_switch_section):
-                                if not config.has_section(new_switch_section):
-                                    config.add_section(new_switch_section)
-                                for key, value in config.items(old_switch_section):
-                                    config.set(new_switch_section, key, value)
-                                config.remove_section(old_switch_section)
-                                print(f"Reindexed {old_switch_section} to {new_switch_section}")
+                    # Re-index associated switches
+                    for old_switch_section in [s for s in config.sections() if s.startswith(f'switch_{old_idx}_')]:
+                        switch_idx = old_switch_section.split('_')[2]
+                        new_switch_section = f'switch_{new_idx}_{switch_idx}'
+                        switch_data = dict(config.items(old_switch_section))
+                        config.remove_section(old_switch_section)
+                        config.add_section(new_switch_section)
+                        for key, value in switch_data.items():
+                            config.set(new_switch_section, key, value)
+                        print(f"Reindexed {old_switch_section} to {new_switch_section}")
 
-                    for input_key in list(existing_inputs_by_module_and_input_idx.keys()):
-                        if input_key[0] == old_idx:
-                            old_input_section = f'input_{old_idx}_{input_key[1]}'
-                            new_input_section = f'input_{new_idx}_{input_key[1]}'
-                            if config.has_section(old_input_section):
-                                if not config.has_section(new_input_section):
-                                    config.add_section(new_input_section)
-                                for key, value in config.items(old_input_section):
-                                    config.set(new_input_section, key, value)
-                                config.remove_section(old_input_section)
-                                print(f"Reindexed {old_input_section} to {new_input_section}")
+                    # Re-index associated inputs
+                    for old_input_section in [s for s in config.sections() if s.startswith(f'input_{old_idx}_')]:
+                        input_idx = old_input_section.split('_')[2]
+                        new_input_section = f'input_{new_idx}_{input_idx}'
+                        input_data = dict(config.items(old_input_section))
+                        config.remove_section(old_input_section)
+                        config.add_section(new_input_section)
+                        for key, value in input_data.items():
+                            config.set(new_input_section, key, value)
+                        print(f"Reindexed {old_input_section} to {new_input_section}")
+
                 new_idx += 1
 
-            # Update Global numberofmodules to the new count
+
+            # Update Global counts to the new counts
             config.set('Global', 'numberofmodules', str(len([s for s in config.sections() if s.startswith('Relay_Module_')])))
             config.set('Global', 'numberoftempsensors', str(len([s for s in config.sections() if s.startswith('Temp_Sensor_')])))
             config.set('Global', 'numberoftanksensors', str(len([s for s in config.sections() if s.startswith('Tank_Sensor_')])))
@@ -1368,7 +1442,7 @@ def create_or_edit_config():
             print(f"\nconfig successfully created/updated at {config_path}")
             break # Exit main loop after saving
 
-        elif main_menu_choice == '6': # Exit without Saving (was 5)
+        elif main_menu_choice == '6': # Exit without Saving
             print("Exiting script without saving changes.")
             return
 
