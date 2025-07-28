@@ -487,9 +487,21 @@ class DbusTempSensor(VeDbusService):
         self.add_path('/Connected', 1) # 1 for connected
 
         # Temperature specific paths
-        self.add_path('/Temperature', 0.0) # Initial temperature
-        self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
-        self.add_path('/Humidity', 0.0) # Initial Humidity
+        temp_topic = self.device_config.get('TemperatureStateTopic')
+        if is_valid_topic(temp_topic):
+            self.dbus_path_to_state_topic_map['/Temperature'] = temp_topic
+            self.add_path('/Temperature', 0.0) # Initial temperature
+        battery_topic = self.device_config.get('BatteryStateTopic')
+        if is_valid_topic(battery_topic):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
+            battery_topic = self.device_config.get('BatteryStateTopic')
+        if is_valid_topic(battery_topic):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
+            self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
+        humidity_topic = self.device_config.get('HumidityStateTopic')
+        if is_valid_topic(humidity_topic):
+            self.dbus_path_to_state_topic_map['/Humidity'] = humidity_topic
+            self.add_path('/Humidity', 0.0) # Initial Humidity
 
         # TemperatureType mapping and D-Bus path
         initial_type_str = self.device_config.get('Type', 'generic').lower()
@@ -639,8 +651,17 @@ class DbusTankSensor(VeDbusService):
         # Other paths not yet implemented via MQTT
         self.add_path('/RawUnit', self.device_config.get('RawUnit', ''))
         self.add_path('/Shape', 0)
-        self.add_path('/Temperature', 0.0)
-        self.add_path('/BatteryVoltage', 0.0)
+        temp_topic = self.device_config.get('TemperatureStateTopic')
+        if is_valid_topic(temp_topic):
+            self.dbus_path_to_state_topic_map['/Temperature'] = temp_topic
+            self.add_path('/Temperature', 0.0)
+        battery_topic = self.device_config.get('BatteryStateTopic')
+        if is_valid_topic(battery_topic):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
+            battery_topic = self.device_config.get('BatteryStateTopic')
+        if is_valid_topic(battery_topic):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
+            self.add_path('/BatteryVoltage', 0.0)
 
         # Use the global MQTT client passed in
         self.mqtt_client = mqtt_client
