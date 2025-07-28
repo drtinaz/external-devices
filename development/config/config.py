@@ -862,8 +862,7 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         ('pvvoltagestatetopic', 'PV voltage'),
         ('pvpowerstatetopic', 'PV power'),
         ('chargerstatetopic', 'charger state'),
-        ('loadstatetopic', 'load state'),
-        ('yieldtoday', 'yield today')
+        ('loadstatetopic', 'load state')
     ]
 
     for key, label in topic_keys:
