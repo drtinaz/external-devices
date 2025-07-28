@@ -730,11 +730,11 @@ def configure_virtual_battery(config, existing_virtual_batteries_by_index, devic
     config.set(virtual_battery_section, 'capacityah', capacity if capacity else current_capacity)
 
     current_current_state_topic = battery_data_from_file.get('currentstatetopic', 'path/to/mqtt/battery/current')
-    current_state_topic = input(f"Enter MQTT current state topic for Virtual Battery {battery_idx} (current: {current_current_state_topic}): ")
+    current_state_topic = input(f"Enter MQTT battery current state topic for Virtual Battery {battery_idx} (current: {current_current_state_topic}): ")
     config.set(virtual_battery_section, 'currentstatetopic', current_state_topic if current_state_topic else current_current_state_topic)
 
     current_power_state_topic = battery_data_from_file.get('powerstatetopic', 'path/to/mqtt/battery/power')
-    power_state_topic = input(f"Enter MQTT power state topic for Virtual Battery {battery_idx} (current: {current_power_state_topic}): ")
+    power_state_topic = input(f"Enter MQTT battery power state topic for Virtual Battery {battery_idx} (current: {current_power_state_topic}): ")
     config.set(virtual_battery_section, 'powerstatetopic', power_state_topic if power_state_topic else current_power_state_topic)
 
     current_temperature_state_topic = battery_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/battery/temperature')
@@ -862,7 +862,8 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         ('pvvoltagestatetopic', 'PV voltage'),
         ('pvpowerstatetopic', 'PV power'),
         ('chargerstatetopic', 'charger state'),
-        ('loadstatetopic', 'load state')
+        ('loadstatetopic', 'load state'),
+        ('yieldtoday', 'yield today')
     ]
 
     for key, label in topic_keys:
