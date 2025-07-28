@@ -46,6 +46,11 @@ def get_json_attribute(data, path):
             return None
     return current
 
+def is_valid_topic(topic):
+    result = topic and 'path/to/mqtt' not in topic
+    logger.debug(f"is_valid_topic('{topic}') = {result}")
+    return result
+
 # ====================================================================
 # DbusSwitch Class
 # ====================================================================
