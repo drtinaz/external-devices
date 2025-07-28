@@ -976,6 +976,7 @@ class DbusPvCharger(VeDbusService):
         self.add_path('/Pv/V', 0.0)
         self.add_path('/Yield/Power', 0.0)
         self.add_path('/Yield/User', 0.0)
+        self.add_path('/Yield/System', 0.0)
         
         self.mqtt_client = mqtt_client
 
