@@ -7,3 +7,7 @@ v1.1
   fix file permissions
 v1.2
   further developement of digital inputs
+v1.3
+  major overhaul of configuration script and menu structure
+  added PV Chargers (dc)
+  major overhaul of external_devices.py to drastically reduce cpu and overhead.
