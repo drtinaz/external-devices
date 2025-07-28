@@ -975,6 +975,8 @@ class DbusPvCharger(VeDbusService):
         # PV Paths
         self.add_path('/Pv/V', 0.0)
         self.add_path('/Yield/Power', 0.0)
+        self.add_path('/Yield/User', 0.0)
+        self.add_path('/Yield/System', 0.0)
         
         self.mqtt_client = mqtt_client
 
@@ -986,7 +988,9 @@ class DbusPvCharger(VeDbusService):
             '/Load/State': self.device_config.get('LoadStateTopic'),
             '/State': self.device_config.get('ChargerStateTopic'),
             '/Pv/V': self.device_config.get('PvVoltageStateTopic'),
-            '/Yield/Power': self.device_config.get('PvPowerStateTopic')
+            '/Yield/Power': self.device_config.get('PvPowerStateTopic'),
+            '/Yield/User': self.device_config.get('TotalYield'),
+            '/Yield/System': self.device_config.get('SystemYield')
         }
         self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
 
