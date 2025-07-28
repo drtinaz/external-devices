@@ -487,18 +487,9 @@ class DbusTempSensor(VeDbusService):
         self.add_path('/Connected', 1) # 1 for connected
 
         # Temperature specific paths
-        self.add_path('/Temperature', 0.0) # Main path is always created
-
-        # Helper to check if a topic is configured
-        def is_valid_topic(topic):
-            return topic and 'path/to/mqtt' not in topic
-
-        # Conditionally create paths for optional sensors based on their topic setting
-        if is_valid_topic(self.device_config.get('HumidityStateTopic')):
-            self.add_path('/Humidity', 0.0) # Initial Humidity
-        
-        if is_valid_topic(self.device_config.get('BatteryStateTopic')):
-            self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
+        self.add_path('/Temperature', 0.0) # Initial temperature
+        self.add_path('/BatteryVoltage', 0.0) # Initial BatteryVoltage
+        self.add_path('/Humidity', 0.0) # Initial Humidity
 
         # TemperatureType mapping and D-Bus path
         initial_type_str = self.device_config.get('Type', 'generic').lower()
@@ -648,7 +639,8 @@ class DbusTankSensor(VeDbusService):
         # Other paths not yet implemented via MQTT
         self.add_path('/RawUnit', self.device_config.get('RawUnit', ''))
         self.add_path('/Shape', 0)
-        # Temperature and BatteryVoltage are added conditionally below, after is_valid_topic is defined.
+        self.add_path('/Temperature', 0.0)
+        self.add_path('/BatteryVoltage', 0.0)
 
         # Use the global MQTT client passed in
         self.mqtt_client = mqtt_client
@@ -672,17 +664,12 @@ class DbusTankSensor(VeDbusService):
         else:
             logger.warning(f"Tank '{self['/CustomName']}': Neither RawValueStateTopic nor LevelStateTopic are valid. Tank level will not update from MQTT.")
         
-        # Add other topics if they exist, and create their D-Bus paths
-        temp_topic = self.device_config.get('TemperatureStateTopic')
-        if is_valid_topic(temp_topic):
-            self.add_path('/Temperature', 0.0)
-            self.dbus_path_to_state_topic_map['/Temperature'] = temp_topic
+        # Add other topics if they exist
+        if is_valid_topic(self.device_config.get('TemperatureStateTopic')):
+            self.dbus_path_to_state_topic_map['/Temperature'] = self.device_config.get('TemperatureStateTopic')
             logger.debug(f"Tank '{self['/CustomName']}' also subscribing to Temperature topic: {self.device_config.get('TemperatureStateTopic')}")
-
-        battery_topic = self.device_config.get('BatteryStateTopic')
-        if is_valid_topic(battery_topic):
-            self.add_path('/BatteryVoltage', 0.0)
-            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
+        if is_valid_topic(self.device_config.get('BatteryStateTopic')):
+            self.dbus_path_to_state_topic_map['/BatteryVoltage'] = self.device_config.get('BatteryStateTopic')
             logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {self.device_config.get('BatteryStateTopic')}")
 
         self.register() # Register D-Bus paths before subscribing to MQTT
