@@ -863,7 +863,8 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
         ('pvpowerstatetopic', 'PV power'),
         ('chargerstatetopic', 'charger state'),
         ('loadstatetopic', 'load state'),
-        ('totalyield', 'total accumulated yield')
+        ('totalyield', 'total user accumulated yield'),
+        ('systemyield', 'total system accumulated yield')
     ]
 
     for key, label in topic_keys:
