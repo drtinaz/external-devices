@@ -936,6 +936,139 @@ class DbusBattery(VeDbusService):
         self[path] = value
         return False
 
+# ====================================================================
+# DbusPvCharger Class (NEW)
+# ====================================================================
+class DbusPvCharger(VeDbusService):
+    def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
+        super().__init__(service_name, bus=bus, register=False)
+        self.device_config = device_config
+        self.device_index = device_config.getint('DeviceIndex')
+        self.service_name = service_name
+
+        self.add_path('/Mgmt/ProcessName', 'dbus-victron-virtual')
+        self.add_path('/Mgmt/ProcessVersion', '0.0.1')
+        self.add_path('/Mgmt/Connection', 'Virtual')
+
+        self.add_path('/DeviceInstance', self.device_config.getint('DeviceInstance'))
+        self.add_path('/ProductId', 41318)
+        self.add_path('/ProductName', 'Virtual MPPT')
+        self.add_path('/CustomName', self.device_config.get('CustomName'), writeable=True, onchangecallback=self.handle_dbus_change)
+        self.add_path('/Serial', serial_number)
+
+        self.add_path('/Connected', 1)
+
+        # DC Paths
+        self.add_path('/Dc/0/Current', 0.0)
+        self.add_path('/Dc/0/Voltage', 0.0)
+
+        # Link Paths
+        self.add_path('/Link/ChargeVoltage', None)
+        self.add_path('/Link/ChargeCurrent', None)
+
+        # Load Path
+        self.add_path('/Load/State', None)
+        
+        # Charger State
+        self.add_path('/State', 0) # 0=Off, 3=Bulk, 4=Absorption, 5=Float
+
+        # PV Paths
+        self.add_path('/Pv/V', 0.0)
+        self.add_path('/Yield/Power', 0.0)
+        
+        self.mqtt_client = mqtt_client
+
+        self.dbus_path_to_state_topic_map = {
+            '/Dc/0/Current': self.device_config.get('BatteryCurrentStateTopic'),
+            '/Dc/0/Voltage': self.device_config.get('BatteryVoltageStateTopic'),
+            '/Link/ChargeVoltage': self.device_config.get('MaxChargeVoltageStateTopic'),
+            '/Link/ChargeCurrent': self.device_config.get('MaxChargeCurrentStateTopic'),
+            '/Load/State': self.device_config.get('LoadStateTopic'),
+            '/State': self.device_config.get('ChargerStateTopic'),
+            '/Pv/V': self.device_config.get('PvVoltageStateTopic'),
+            '/Yield/Power': self.device_config.get('PvPowerStateTopic')
+        }
+        self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
+
+        self.register()
+
+        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
+            if topic:
+                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
+                self.mqtt_client.subscribe(topic)
+                logger.debug(f"Added specific MQTT callback and subscribed for DbusPvCharger '{self['/CustomName']}' on topic: {topic}")
+
+        logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
+
+    def on_mqtt_message_specific(self, client, userdata, msg):
+        logger.debug(f"DbusPvCharger specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
+        try:
+            payload_str = msg.payload.decode().strip()
+            topic = msg.topic
+            dbus_path = next((k for k, v in self.dbus_path_to_state_topic_map.items() if v == topic), None)
+            if not dbus_path:
+                return
+
+            value = None
+            try:
+                # Attempt to parse as JSON with a "value" key
+                incoming_json = json.loads(payload_str)
+                if isinstance(incoming_json, dict) and "value" in incoming_json:
+                    value = incoming_json["value"]
+                else: # Fallback for plain numeric JSON
+                    value = float(payload_str)
+            except (json.JSONDecodeError, ValueError):
+                # If not JSON, handle as plain string or number
+                if dbus_path == '/State':
+                    state_map = {'off': 0, 'bulk': 3, 'absorption': 4, 'float': 5}
+                    try: value = int(payload_str)
+                    except ValueError: value = state_map.get(payload_str.lower())
+                elif dbus_path == '/Load/State':
+                    state_map = {'off': 0, 'on': 1}
+                    try: value = int(payload_str)
+                    except ValueError: value = state_map.get(payload_str.lower())
+                else:
+                    try: value = float(payload_str)
+                    except ValueError:
+                        logger.warning(f"DbusPvCharger: Payload '{payload_str}' for topic '{topic}' is not a valid float or recognized state string.")
+                        return
+
+            if value is None:
+                logger.warning(f"DbusPvCharger: Could not extract a valid value from payload '{payload_str}' for topic '{topic}'.")
+                return
+
+            if self[dbus_path] != value:
+                logger.debug(f"DbusPvCharger: Updating D-Bus path '{dbus_path}' to {value} for '{self['/CustomName']}'.")
+                GLib.idle_add(self.update_dbus_from_mqtt, dbus_path, value)
+
+        except Exception as e:
+            logger.error(f"Error processing MQTT message for PV Charger {self.service_name} on topic {msg.topic}: {e}")
+            traceback.print_exc()
+
+    def handle_dbus_change(self, path, value):
+        section_name = f'Pv_Charger_{self.device_index}'
+        if path == '/CustomName':
+            self.save_config_change(section_name, 'CustomName', value)
+            return True
+        return False
+
+    def save_config_change(self, section, key, value):
+        config = configparser.ConfigParser()
+        try:
+            config.read(CONFIG_FILE_PATH)
+            if not config.has_section(section):
+                config.add_section(section)
+            config.set(section, key, str(value))
+            with open(CONFIG_FILE_PATH, 'w') as f:
+                config.write(f)
+            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+        except Exception as e:
+            logger.error(f"Failed to save config change for PV Charger: {e}")
+            traceback.print_exc()
+
+    def update_dbus_from_mqtt(self, path, value):
+        self[path] = value
+        return False
 
 # ====================================================================
 # Global MQTT Callbacks
@@ -1052,11 +1185,12 @@ def main():
     active_services = [] # List to hold references to our D-Bus services
 
     device_type_map = {
-        'relay_module_': DbusSwitch, # This is the only prefix for a DbusSwitch parent
+        'relay_module_': DbusSwitch,
         'temp_sensor_': DbusTempSensor,
         'tank_sensor_': DbusTankSensor,
         'virtual_battery_': DbusBattery,
-        'input_': DbusDigitalInput
+        'input_': DbusDigitalInput,
+        'pv_charger_': DbusPvCharger # Added PV Charger
     }
 
     sections_to_process = []
@@ -1105,13 +1239,12 @@ def main():
                 
                 # Default service name uses 'external_' prefix and device type
                 base_service_name_type = device_type_string.replace("_", "")
-                if base_service_name_type == 'relaymodule': base_service_name_type = 'switch' # Special case for service name
-                elif base_service_name_type == 'input': base_service_name_type = 'digitalinput' # Special case
-                # START MODIFICATION (Previous fix for temp/tank, now adding battery)
+                if base_service_name_type == 'relaymodule': base_service_name_type = 'switch'
+                elif base_service_name_type == 'input': base_service_name_type = 'digitalinput'
                 elif base_service_name_type == 'tanksensor': base_service_name_type = 'tank'
                 elif base_service_name_type == 'tempsensor': base_service_name_type = 'temperature'
-                elif base_service_name_type == 'virtualbattery': base_service_name_type = 'battery' # NEW FIX FOR BATTERY
-                # END MODIFICATION
+                elif base_service_name_type == 'virtualbattery': base_service_name_type = 'battery'
+                elif base_service_name_type == 'pvcharger': base_service_name_type = 'solarcharger' # Added for PV Charger
                 
                 service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
 
@@ -1144,7 +1277,7 @@ def main():
                     # The service name for a Relay_Module is based on its serial.
                     service = device_class(service_name, device_config, output_configs, serial_number, mqtt_client,
                                         mqtt_on_state, mqtt_off_state, mqtt_on_cmd, mqtt_off_cmd, device_bus)
-                else: # For all other device types (DigitalInput, TempSensor, TankSensor, Battery)
+                else: # For all other device types (DigitalInput, TempSensor, TankSensor, Battery, PvCharger)
                     service = device_class(service_name, device_config, serial_number, mqtt_client, device_bus)
                 
                 active_services.append(service)
