@@ -1287,7 +1287,7 @@ def main():
             mqtt_client.disconnect()
         sys.exit(0)
 
-    logger.info('All identified external device services created. Starting GLib.MainLoop(). Press Ctrl+C to exit.')
+    logger.info('All identified external device services created. Starting GLib.MainLoop().')
     
     # Keep the main loop running to maintain D-Bus services and MQTT client
     mainloop = GLib.MainLoop()
