@@ -135,10 +135,7 @@ class DbusSwitch(VeDbusService):
         self.add_path(f'{settings_prefix}/Type', 1, writeable=True)
         self.add_path(f'{settings_prefix}/ValidTypes', 7)
 
-    # ... (rest of DbusSwitch class methods) ...
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -231,7 +228,7 @@ class DbusSwitch(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for key '{key}': {e}")
             traceback.print_exc()
@@ -278,8 +275,7 @@ class DbusDigitalInput(VeDbusService):
         'fire alarm': 7,
         'co2 alarm': 8,
         'generator': 9,
-        'touch input control': 10,
-        'generic': 3 # Default if not specified or unrecognized
+        'touch input control': 10
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
@@ -314,7 +310,6 @@ class DbusDigitalInput(VeDbusService):
         
         # Settings paths
         self.add_path('/Settings/InvertTranslation', self.device_config.getint('InvertTranslation', 0), writeable=True, onchangecallback=self.handle_dbus_change)
-        # Added new D-Bus paths for InvertAlarm and AlarmSetting
         self.add_path('/Settings/InvertAlarm', self.device_config.getint('InvertAlarm', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         self.add_path('/Settings/AlarmSetting', self.device_config.getint('AlarmSetting', 0), writeable=True, onchangecallback=self.handle_dbus_change)
 
@@ -343,8 +338,6 @@ class DbusDigitalInput(VeDbusService):
 
     # Specific message handler for this digital input
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -398,7 +391,7 @@ class DbusDigitalInput(VeDbusService):
         
         if current_type == 2:  # 'door alarm'
             return 7 if logical_state == 1 else 6  # 7=alarm, 6=normal
-        elif current_type == 3: # 'bilge pump' or 'generic'
+        elif current_type == 3: # 'bilge pump'
             return 3 if logical_state == 1 else 2  # 3=on, 2=off
         elif 4 <= current_type <= 8: # bilge alarm, burglar alarm, smoke alarm, fire alarm, co2 alarm
             return 9 if logical_state == 1 else 8  # 9=alarm, 8=normal
@@ -451,7 +444,7 @@ class DbusDigitalInput(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
             traceback.print_exc()
@@ -602,7 +595,7 @@ class DbusTempSensor(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for TempSensor key '{key}': {e}")
             traceback.print_exc()
@@ -707,8 +700,6 @@ class DbusTankSensor(VeDbusService):
 
     # Specific message handler for this tank sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -819,7 +810,7 @@ class DbusTankSensor(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for Tank: {e}")
             traceback.print_exc()
@@ -887,8 +878,6 @@ class DbusBattery(VeDbusService):
 
     # Specific message handler for this battery
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -947,7 +936,7 @@ class DbusBattery(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for Battery: {e}")
             traceback.print_exc()
@@ -990,7 +979,7 @@ class DbusPvCharger(VeDbusService):
         self.add_path('/Load/State', None)
         
         # Charger State
-        self.add_path('/State', 0) # 0=Off, 3=Bulk, 4=Absorption, 5=Float
+        self.add_path('/State', 0)
 
         # PV Paths
         self.add_path('/Pv/V', 0.0)
@@ -1087,7 +1076,7 @@ class DbusPvCharger(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for PV Charger: {e}")
             traceback.print_exc()
@@ -1099,14 +1088,8 @@ class DbusPvCharger(VeDbusService):
 # ====================================================================
 # Global MQTT Callbacks
 # ====================================================================
-# --- Original Global MQTT Connect Callback (renamed for clarity) ---
-def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
-    if rc == 0:
-        logger.info("Connected to MQTT Broker!")
-    else:
-        logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
-# --- Global MQTT Message Dispatcher (MODIFIED) ---
+# --- Global MQTT Message Dispatcher ---
 def on_mqtt_message_dispatcher(client, userdata, msg):
     logger.debug(f"GLOBAL MQTT MESSAGE RECEIVED: Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
     # Iterate through all active services and dispatch the message
@@ -1114,13 +1097,13 @@ def on_mqtt_message_dispatcher(client, userdata, msg):
         # Each service will internally check if the message is relevant to its subscriptions
         service.on_mqtt_message_specific(client, userdata, msg)
 
-# --- ADDED: Global MQTT Disconnect Callback ---
+# --- Global MQTT Disconnect Callback ---
 def on_mqtt_disconnect(client, userdata, rc, properties=None, reason=None): # Added properties and reason
     logger.warning(f"MQTT client disconnected with result code: {rc}, Reason: {reason}")
 
-# --- ADDED: Global MQTT Subscribe Callback ---
+# --- Global MQTT Subscribe Callback ---
 def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
-    logger.info(f"MQTT Subscription acknowledged by broker. Message ID: {mid}, Granted QoS: {granted_qos}")
+    logger.debug(f"MQTT Subscription acknowledged by broker. Message ID: {mid}, Granted QoS: {granted_qos}")
 
 
 # ====================================================================
@@ -1167,30 +1150,7 @@ def main():
 
     client_id = f"external-devices-main-script-{os.getpid()}"
     logger.info(f"Using MQTT Client ID: {client_id}")
-    # FIX: Corrected CallbackAPIVersion to start with an uppercase 'V'
     mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
-
-    # --- START DEBUGGING ADDITIONS: Specific callbacks for test topic ---
-    TEST_MQTT_TOPIC = "venus-home/N/c0619ab1f730/battery/1/Dc/0/Power" # This is already a DbusBattery topic.
-
-    def debug_on_connect(client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            logger.info("DEBUG_TEST_CONNECT: Connected to MQTT Broker successfully!")
-            # Explicitly subscribe to the test topic here to ensure it's always active
-            # This subscription will be added to the global client's subscriptions.
-            # All unique topics from active_services will also be subscribed to after they are initialized.
-            client.subscribe(TEST_MQTT_TOPIC) 
-            logger.info(f"DEBUG_TEST_CONNECT: Subscribed to '{TEST_MQTT_TOPIC}' for global monitoring.")
-            on_mqtt_connect_original_global(client, userdata, flags, rc, properties)
-        else:
-            logger.error(f"DEBUG_TEST_CONNECT: Failed to connect, return code {rc}")
-
-    # Assign the new dispatcher as the global on_message handler
-    mqtt_client.on_message = on_mqtt_message_dispatcher 
-    mqtt_client.on_connect = debug_on_connect
-    mqtt_client.on_subscribe = on_mqtt_subscribe 
-    mqtt_client.on_disconnect = on_mqtt_disconnect
-    # --- END DEBUGGING ADDITIONS ---
     
     if MQTT_USERNAME and MQTT_PASSWORD:
         mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -1214,7 +1174,7 @@ def main():
         'tank_sensor_': DbusTankSensor,
         'virtual_battery_': DbusBattery,
         'input_': DbusDigitalInput,
-        'pv_charger_': DbusPvCharger # Added PV Charger
+        'pv_charger_': DbusPvCharger
     }
 
     sections_to_process = []
@@ -1222,7 +1182,6 @@ def main():
         section_lower = section.lower()
         if section_lower in ['global', 'mqtt']:
             continue
-        # RE-ENABLED: This correctly skips [switch_X_Y] sections from being processed as top-level devices
         if section_lower.startswith('switch_') and re.match(r'^switch_\d+_\d+$', section_lower):
             logger.debug(f"Section '{section}' appears to be a switch output configuration. It will be processed by its parent Relay_Module. Skipping direct device creation.")
             continue
@@ -1273,7 +1232,6 @@ def main():
                 service_name = f'com.victronenergy.{base_service_name_type}.external_{serial_number}'
 
                 if device_class == DbusSwitch:
-                    # This branch is now ONLY for Relay_Module_X sections (multi-output switch modules)
                     output_configs = []
                     
                     mqtt_on_state = device_config.get('mqtt_on_state_payload', '1')
@@ -1319,7 +1277,7 @@ def main():
     # AFTER all services are initialized, subscribe to all unique topics
     for topic in all_topics_to_subscribe:
         mqtt_client.subscribe(topic)
-        logger.info(f"Main loop subscribing to MQTT topic: {topic}")
+        logger.debug(f"Main loop subscribing to MQTT topic: {topic}")
 
 
     if not active_services:
