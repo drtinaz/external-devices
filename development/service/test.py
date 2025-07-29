@@ -227,7 +227,7 @@ class DbusSwitch(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for key '{key}': {e}")
             traceback.print_exc()
@@ -444,7 +444,7 @@ class DbusDigitalInput(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for key '{key}' in section '{section}': {e}")
             traceback.print_exc()
@@ -593,7 +593,7 @@ class DbusTempSensor(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as configfile:
                 config.write(configfile)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config file changes for TempSensor key '{key}': {e}")
             traceback.print_exc()
@@ -808,7 +808,7 @@ class DbusTankSensor(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for Tank: {e}")
             traceback.print_exc()
@@ -934,7 +934,7 @@ class DbusBattery(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for Battery: {e}")
             traceback.print_exc()
@@ -1074,7 +1074,7 @@ class DbusPvCharger(VeDbusService):
             config.set(section, key, str(value))
             with open(CONFIG_FILE_PATH, 'w') as f:
                 config.write(f)
-            logger.info(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
+            logger.debug(f"Saved config: Section=[{section}], Key='{key}', Value='{value}'")
         except Exception as e:
             logger.error(f"Failed to save config change for PV Charger: {e}")
             traceback.print_exc()
@@ -1107,7 +1107,7 @@ def on_mqtt_disconnect(client, userdata, rc, properties=None, reason=None): # Ad
 
 # --- ADDED: Global MQTT Subscribe Callback ---
 def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
-    logger.info(f"MQTT Subscription acknowledged by broker. Message ID: {mid}, Granted QoS: {granted_qos}")
+    logger.debug(f"MQTT Subscription acknowledged by broker. Message ID: {mid}, Granted QoS: {granted_qos}")
 
 
 # ====================================================================
@@ -1165,7 +1165,7 @@ def main():
     
     if MQTT_USERNAME and MQTT_PASSWORD:
         mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-        logger.info("MQTT Username/Password set.")
+        logger.debug("MQTT Username/Password set.")
     
     # Connect and start MQTT client loop in a non-blocking way
     try:
@@ -1276,7 +1276,7 @@ def main():
                     service = device_class(service_name, device_config, serial_number, mqtt_client, device_bus)
                 
                 active_services.append(service)
-                logger.info(f"Successfully initialized and registered D-Bus service for [{section}] of type '{device_type_string}'.")
+                logger.debug(f"Successfully initialized and registered D-Bus service for [{section}] of type '{device_type_string}'.")
 
                 # Collect topics to subscribe to centrally
                 all_topics_to_subscribe.update(service.mqtt_subscriptions)
@@ -1290,7 +1290,7 @@ def main():
     # AFTER all services are initialized, subscribe to all unique topics
     for topic in all_topics_to_subscribe:
         mqtt_client.subscribe(topic)
-        logger.info(f"Main loop subscribing to MQTT topic: {topic}")
+        logger.debug(f"Main loop subscribing to MQTT topic: {topic}")
 
 
     if not active_services:
@@ -1300,14 +1300,14 @@ def main():
             mqtt_client.disconnect()
         sys.exit(0)
 
-    logger.info('All identified external device services created. Starting GLib.MainLoop(). Press Ctrl+C to exit.')
+    logger.info('All identified external device services created. Starting GLib.MainLoop().')
     
     # Keep the main loop running to maintain D-Bus services and MQTT client
     mainloop = GLib.MainLoop()
     try:
         mainloop.run()
     except KeyboardInterrupt:
-        logger.info("Exiting D-Bus Virtual Devices main service.")
+        logger.debug("Exiting D-Bus Virtual Devices main service.")
     except Exception as e:
         logger.error(f"An unexpected error occurred in the main loop: {e}")
         traceback.print_exc()
@@ -1316,8 +1316,8 @@ def main():
         if mqtt_client:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
-            logger.info("MQTT client disconnected.")
-        logger.info("Script finished.")
+            logger.debug("MQTT client disconnected.")
+        logger.debug("Script finished.")
 
 
 if __name__ == "__main__":
