@@ -10,9 +10,9 @@ import time
 import paho.mqtt.client as mqtt
 import threading
 import json
-import re # Import regex module
-import dbus.bus # Explicitly import dbus.bus for BusConnection
-import traceback # Import traceback for detailed error logging
+import re
+import dbus.bus
+import traceback
 
 logger = logging.getLogger()
 
@@ -57,7 +57,7 @@ class DbusSwitch(VeDbusService):
 
         self.service_name = service_name # Store service_name for logging
         self.device_config = device_config
-        self.device_index = device_config.getint('DeviceIndex') # This 'DeviceIndex' now comes from either Relay_Module_X or switch_X_Y
+        self.device_index = device_config.getint('DeviceIndex')
         self.mqtt_on_state_payload_raw = mqtt_on_state_payload
         self.mqtt_off_state_payload_raw = mqtt_off_state_payload
         self.mqtt_on_command_payload = mqtt_on_command_payload
@@ -73,7 +73,6 @@ class DbusSwitch(VeDbusService):
             pass
 
         try:
-            # Fix: Use mqtt_off_state_payload instead of undefined mqtt_off_payload
             parsed_off = json.loads(mqtt_off_state_payload)
             if isinstance(parsed_off, dict) and len(parsed_off) == 1:
                 self.mqtt_off_state_payload_json = parsed_off
@@ -135,10 +134,7 @@ class DbusSwitch(VeDbusService):
         self.add_path(f'{settings_prefix}/Type', 1, writeable=True)
         self.add_path(f'{settings_prefix}/ValidTypes', 7)
 
-    # ... (rest of DbusSwitch class methods) ...
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -278,8 +274,7 @@ class DbusDigitalInput(VeDbusService):
         'fire alarm': 7,
         'co2 alarm': 8,
         'generator': 9,
-        'touch input control': 10,
-        'generic': 3 # Default if not specified or unrecognized
+        'touch input control': 10
     }
 
     def __init__(self, service_name, device_config, serial_number, mqtt_client, bus):
@@ -308,8 +303,8 @@ class DbusDigitalInput(VeDbusService):
         self.add_path('/State', self.device_config.getint('State', 0), writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Modified: Convert text 'Type' from config to integer for D-Bus
-        initial_type_str = self.device_config.get('Type', 'generic').lower() # Get as string, make lowercase
-        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['generic']) # Convert to int, default to generic
+        initial_type_str = self.device_config.get('Type', 'disabled').lower() # Get as string, make lowercase
+        initial_type_int = self.DIGITAL_INPUT_TYPES.get(initial_type_str, self.DIGITAL_INPUT_TYPES['disabled']) # Convert to int, default to disabled
         self.add_path('/Type', initial_type_int, writeable=True, onchangecallback=self.handle_dbus_change)
         
         # Settings paths
@@ -343,8 +338,6 @@ class DbusDigitalInput(VeDbusService):
 
     # Specific message handler for this digital input
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -398,7 +391,7 @@ class DbusDigitalInput(VeDbusService):
         
         if current_type == 2:  # 'door alarm'
             return 7 if logical_state == 1 else 6  # 7=alarm, 6=normal
-        elif current_type == 3: # 'bilge pump' or 'generic'
+        elif current_type == 3: # 'bilge pump'
             return 3 if logical_state == 1 else 2  # 3=on, 2=off
         elif 4 <= current_type <= 8: # bilge alarm, burglar alarm, smoke alarm, fire alarm, co2 alarm
             return 9 if logical_state == 1 else 8  # 9=alarm, 8=normal
@@ -422,7 +415,7 @@ class DbusDigitalInput(VeDbusService):
             
             value_to_save = value
             if path == '/Type':
-                value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'generic')
+                value_to_save = next((name for name, num in self.DIGITAL_INPUT_TYPES.items() if num == value), 'disabled')
             
             # Special handling for Alarm settings as they are under /Settings
             if path.startswith('/Settings/'):
@@ -538,8 +531,6 @@ class DbusTempSensor(VeDbusService):
 
     # Specific message handler for this temp sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -707,8 +698,6 @@ class DbusTankSensor(VeDbusService):
 
     # Specific message handler for this tank sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -887,8 +876,6 @@ class DbusBattery(VeDbusService):
 
     # Specific message handler for this battery
     def on_mqtt_message_specific(self, client, userdata, msg):
-        # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
-        # Check if the topic is one this instance is interested in
         if msg.topic not in self.mqtt_subscriptions:
             return # Not for this instance
 
@@ -1106,7 +1093,7 @@ def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
-# --- Global MQTT Message Dispatcher (MODIFIED) ---
+# --- Global MQTT Message Dispatcher ---
 def on_mqtt_message_dispatcher(client, userdata, msg):
     logger.debug(f"GLOBAL MQTT MESSAGE RECEIVED: Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
     # Iterate through all active services and dispatch the message
