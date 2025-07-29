@@ -566,15 +566,15 @@ def configure_temp_sensor(config, existing_temp_sensors_by_index, device_instanc
             config.set(temp_sensor_section, 'type', current_temp_sensor_type)
             break
 
-    current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/temperature')
+    current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/topic')
     temp_state_topic = input(f"Enter MQTT temperature state topic for Temperature Sensor {sensor_idx} (current: {current_temp_state_topic}): ")
     config.set(temp_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
 
-    current_humidity_state_topic = sensor_data_from_file.get('humiditystatetopic', 'path/to/mqtt/humidity')
+    current_humidity_state_topic = sensor_data_from_file.get('humiditystatetopic', 'path/to/mqtt/topic')
     humidity_state_topic = input(f"Enter MQTT humidity state topic for Temperature Sensor {sensor_idx} (current: {current_humidity_state_topic}): ")
     config.set(temp_sensor_section, 'humiditystatetopic', humidity_state_topic if humidity_state_topic else current_humidity_state_topic)
 
-    current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/battery')
+    current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/topic')
     battery_state_topic = input(f"Enter MQTT battery state topic for Temperature Sensor {sensor_idx} (current: {current_battery_state_topic}): ")
     config.set(temp_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
 
@@ -635,19 +635,19 @@ def configure_tank_sensor(config, existing_tank_sensors_by_index, device_instanc
         print(f"Generated new serial for Tank Sensor {sensor_idx}: {current_serial}")
     config.set(tank_sensor_section, 'serial', current_serial)
 
-    current_level_state_topic = sensor_data_from_file.get('levelstatetopic', 'path/to/mqtt/level')
+    current_level_state_topic = sensor_data_from_file.get('levelstatetopic', 'path/to/mqtt/topic')
     level_state_topic = input(f"Enter MQTT level state topic for Tank Sensor {sensor_idx} (current: {current_level_state_topic}): ")
     config.set(tank_sensor_section, 'levelstatetopic', level_state_topic if level_state_topic else current_level_state_topic)
 
-    current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/battery')
+    current_battery_state_topic = sensor_data_from_file.get('batterystatetopic', 'path/to/mqtt/topic')
     battery_state_topic = input(f"Enter MQTT battery state topic for Tank Sensor {sensor_idx} (current: {current_battery_state_topic}): ")
     config.set(tank_sensor_section, 'batterystatetopic', battery_state_topic if battery_state_topic else current_battery_state_topic)
 
-    current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/temperature')
+    current_temp_state_topic = sensor_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/topic')
     temp_state_topic = input(f"Enter MQTT temperature state topic for Tank Sensor {sensor_idx} (current: {current_temp_state_topic}): ")
     config.set(tank_sensor_section, 'temperaturestatetopic', temp_state_topic if temp_state_topic else current_temp_state_topic)
 
-    current_raw_value_state_topic = sensor_data_from_file.get('rawvaluestatetopic', 'path/to/mqtt/rawvalue')
+    current_raw_value_state_topic = sensor_data_from_file.get('rawvaluestatetopic', 'path/to/mqtt/topic')
     raw_value_state_topic = input(f"Enter MQTT raw value state topic for Tank Sensor {sensor_idx} (current: {current_raw_value_state_topic}): ")
     config.set(tank_sensor_section, 'rawvaluestatetopic', raw_value_state_topic if raw_value_state_topic else current_raw_value_state_topic)
 
@@ -729,39 +729,39 @@ def configure_virtual_battery(config, existing_virtual_batteries_by_index, devic
     capacity = input(f"Enter capacity for Virtual Battery {battery_idx} in Ah (current: {current_capacity}): ")
     config.set(virtual_battery_section, 'capacityah', capacity if capacity else current_capacity)
 
-    current_current_state_topic = battery_data_from_file.get('currentstatetopic', 'path/to/mqtt/battery/current')
+    current_current_state_topic = battery_data_from_file.get('currentstatetopic', 'path/to/mqtt/topic')
     current_state_topic = input(f"Enter MQTT battery current state topic for Virtual Battery {battery_idx} (current: {current_current_state_topic}): ")
     config.set(virtual_battery_section, 'currentstatetopic', current_state_topic if current_state_topic else current_current_state_topic)
 
-    current_power_state_topic = battery_data_from_file.get('powerstatetopic', 'path/to/mqtt/battery/power')
+    current_power_state_topic = battery_data_from_file.get('powerstatetopic', 'path/to/mqtt/topic')
     power_state_topic = input(f"Enter MQTT battery power state topic for Virtual Battery {battery_idx} (current: {current_power_state_topic}): ")
     config.set(virtual_battery_section, 'powerstatetopic', power_state_topic if power_state_topic else current_power_state_topic)
 
-    current_temperature_state_topic = battery_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/battery/temperature')
+    current_temperature_state_topic = battery_data_from_file.get('temperaturestatetopic', 'path/to/mqtt/topic')
     temperature_state_topic = input(f"Enter MQTT temperature state topic for Virtual Battery {battery_idx} (current: {current_temperature_state_topic}): ")
     config.set(virtual_battery_section, 'temperaturestatetopic', temperature_state_topic if temperature_state_topic else current_temperature_state_topic)
 
-    current_voltage_state_topic = battery_data_from_file.get('voltagestatetopic', 'path/to/mqtt/battery/voltage')
+    current_voltage_state_topic = battery_data_from_file.get('voltagestatetopic', 'path/to/mqtt/topic')
     voltage_state_topic = input(f"Enter MQTT voltage state topic for Virtual Battery {battery_idx} (current: {current_voltage_state_topic}): ")
     config.set(virtual_battery_section, 'voltagestatetopic', voltage_state_topic if voltage_state_topic else current_voltage_state_topic)
 
-    current_max_charge_current_state_topic = battery_data_from_file.get('maxchargecurrentstatetopic', 'path/to/mqtt/battery/maxchargecurrent')
+    current_max_charge_current_state_topic = battery_data_from_file.get('maxchargecurrentstatetopic', 'path/to/mqtt/topic')
     max_charge_current_state_topic = input(f"Enter MQTT max charge current state topic for Virtual Battery {battery_idx} (current: {current_max_charge_current_state_topic}): ")
     config.set(virtual_battery_section, 'maxchargecurrentstatetopic', max_charge_current_state_topic if max_charge_current_state_topic else current_max_charge_current_state_topic)
 
-    current_max_charge_voltage_state_topic = battery_data_from_file.get('maxchargevoltagestatetopic', 'path/to/mqtt/battery/maxchargevoltage')
+    current_max_charge_voltage_state_topic = battery_data_from_file.get('maxchargevoltagestatetopic', 'path/to/mqtt/topic')
     max_charge_voltage_state_topic = input(f"Enter MQTT max charge voltage state topic for Virtual Battery {battery_idx} (current: {current_max_charge_voltage_state_topic}): ")
     config.set(virtual_battery_section, 'maxchargevoltagestatetopic', max_charge_voltage_state_topic if max_charge_voltage_state_topic else current_max_charge_voltage_state_topic)
 
-    current_max_discharge_current_state_topic = battery_data_from_file.get('maxdischargecurrentstatetopic', 'path/to/mqtt/battery/maxdischargecurrent')
+    current_max_discharge_current_state_topic = battery_data_from_file.get('maxdischargecurrentstatetopic', 'path/to/mqtt/topic')
     max_discharge_current_state_topic = input(f"Enter MQTT max discharge current state topic for Virtual Battery {battery_idx} (current: {current_max_discharge_current_state_topic}): ")
     config.set(virtual_battery_section, 'maxdischargecurrentstatetopic', max_discharge_current_state_topic if max_discharge_current_state_topic else current_max_discharge_current_state_topic)
 
-    current_soc_state_topic = battery_data_from_file.get('socstatetopic', 'path/to/mqtt/battery/soc')
+    current_soc_state_topic = battery_data_from_file.get('socstatetopic', 'path/to/mqtt/topic')
     soc_state_topic = input(f"Enter MQTT SOC state topic for Virtual Battery {battery_idx} (current: {current_soc_state_topic}): ")
     config.set(virtual_battery_section, 'socstatetopic', soc_state_topic if soc_state_topic else current_soc_state_topic)
 
-    current_soh_state_topic = battery_data_from_file.get('sohstatetopic', 'path/to/mqtt/battery/soh')
+    current_soh_state_topic = battery_data_from_file.get('sohstatetopic', 'path/to/mqtt/topic')
     soh_state_topic = input(f"Enter MQTT SOH state topic for Virtual Battery {battery_idx} (current: {current_soh_state_topic}): ")
     config.set(virtual_battery_section, 'sohstatetopic', soh_state_topic if soh_state_topic else current_soh_state_topic)
 
