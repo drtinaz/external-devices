@@ -109,7 +109,7 @@ def get_mqtt_broker_info(current_broker_address=None, current_port=None, current
     """Prompts user for MQTT broker details, showing existing values as defaults."""
     print("\n--- MQTT Broker Configuration ---")
 
-    broker_address = input(f"Enter MQTT broker address (current: {current_broker_address if current_broker_address else 'not set'}): ") or (current_broker_address if current_broker_address else '')
+    broker_address = input(f"Enter MQTT broker address (current: {current_broker_address if current_broker_address else 'localhost'}): ") or (current_broker_address if current_broker_address else '')
     port = input(f"Enter MQTT port (current: {current_port if current_port else '1883'}): ") or (current_port if current_port else '1883')
     username = input(f"Enter MQTT username (current: {current_username if current_username else 'not set'}; leave blank if none): ") or (current_username if current_username else '')
 
@@ -253,11 +253,11 @@ def configure_relay_module(config, existing_relay_modules_by_index, existing_swi
 
     current_custom_name = module_data_from_file.get('customname', f'Relay Module {module_idx}')
     if is_auto_configured_for_this_slot and module_info_from_discovery:
-        config.set(relay_module_section, 'customname', f"{module_info_from_discovery['device_type'].capitalize()} Module {module_idx} (Auto)")
+        config.set(relay_module_section, 'customname', f"{module_info_from_discovery['device_type'].capitalize()} Module {module_idx}")
     else:
         config.set(relay_module_section, 'customname', input(f"Enter custom name for Relay Module {module_idx} (current: {current_custom_name}): ") or current_custom_name)
 
-    current_num_switches_for_module = module_data_from_file.get('numberofswitches', 2)
+    current_num_switches_for_module = module_data_from_file.get('numberofswitches', 4)
     if is_auto_configured_for_this_slot and module_info_from_discovery:
         if module_info_from_discovery['device_type'] == 'dingtian':
             dingtian_out_switches = set()
@@ -668,7 +668,7 @@ def configure_tank_sensor(config, existing_tank_sensors_by_index, device_instanc
     current_raw_value_empty = sensor_data_from_file.get('rawvalueempty', '0')
     config.set(tank_sensor_section, 'rawvalueempty', input(f"Enter raw value for empty tank (current: {current_raw_value_empty}): ") or current_raw_value_empty)
 
-    current_raw_value_full = sensor_data_from_file.get('rawvaluefull', '50')
+    current_raw_value_full = sensor_data_from_file.get('rawvaluefull', '240')
     config.set(tank_sensor_section, 'rawvaluefull', input(f"Enter raw value for full tank (current: {current_raw_value_full}): ") or current_raw_value_full)
 
     current_capacity = sensor_data_from_file.get('capacity', '0.2')
@@ -775,10 +775,6 @@ def configure_global_settings(config, existing_loglevel, existing_mqtt_broker, e
     """Prompts user for global settings including MQTT broker details."""
     print("\n--- Global Settings Configuration ---")
 
-    # FIX: Removed log level configuration as it's now hardcoded.
-    # The `loglevel` parameter in the config file is no longer used by this script
-    # but is kept for compatibility with the other script that reads it.
-
     if not config.has_section('Global'):
         config.add_section('Global')
 
@@ -868,7 +864,7 @@ def configure_pv_charger(config, existing_pv_chargers_by_index, device_instance_
     ]
 
     for key, label in topic_keys:
-        current_topic = charger_data.get(key, f'path/to/mqtt/{key}')
+        current_topic = charger_data.get(key, f'path/to/mqtt/topic')
         topic = input(f"Enter MQTT topic for {label} (current: {current_topic}): ")
         config.set(pv_charger_section, key, topic or current_topic)
 
@@ -948,7 +944,7 @@ def create_or_edit_config():
         # It is set to DEBUG at the top.
 
         existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
-        existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
+        existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='localhost')
         existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
         existing_mqtt_username = config.get('MQTT', 'username', fallback='')
         existing_mqtt_password = config.get('MQTT', 'password', fallback='')
@@ -1119,7 +1115,7 @@ def create_or_edit_config():
         config.add_section('MQTT')
     # Pre-populate MQTT values if not existing to avoid errors during initial access
     if not config.has_option('MQTT', 'brokeraddress'):
-        config.set('MQTT', 'brokeraddress', '')
+        config.set('MQTT', 'brokeraddress', 'localhost')
     if not config.has_option('MQTT', 'port'):
         config.set('MQTT', 'port', '1883')
     if not config.has_option('MQTT', 'username'):
@@ -1144,7 +1140,7 @@ def create_or_edit_config():
             configure_global_settings(config, existing_loglevel, existing_mqtt_broker, existing_mqtt_port, existing_mqtt_username, existing_mqtt_password)
             # Reload global settings after modification
             existing_loglevel = config.get('Global', 'loglevel', fallback='INFO')
-            existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='')
+            existing_mqtt_broker = config.get('MQTT', 'brokeraddress', fallback='localhost')
             existing_mqtt_port = config.get('MQTT', 'port', fallback='1883')
             existing_mqtt_username = config.get('MQTT', 'username', fallback='')
             existing_mqtt_password = config.get('MQTT', 'password', fallback='')
@@ -1171,7 +1167,7 @@ def create_or_edit_config():
                     if discovery_choice == 'yes':
                         mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
                         # Ensure we use the latest broker info from config
-                        broker_address = config.get('MQTT', 'brokeraddress', fallback='')
+                        broker_address = config.get('MQTT', 'brokeraddress', fallback='localhost')
                         port = config.getint('MQTT', 'port', fallback=1883)
                         username = config.get('MQTT', 'username', fallback='')
                         password = config.get('MQTT', 'password', fallback='')
@@ -1246,7 +1242,6 @@ def create_or_edit_config():
                     else:
                         print("\nSkipping MQTT discovery for auto-configuration.")
 
-                    # --- FIX STARTS HERE ---
                     # If any modules were selected for auto-configuration, loop and add them all.
                     if auto_configured_serials_to_info:
                         print("\n--- Processing Staged Auto-Configuration for All Selected Modules ---")
@@ -1296,7 +1291,6 @@ def create_or_edit_config():
                             config.write(configfile)
                         print("Configuration auto-saved.")
                         load_existing_config_data()
-                    # --- FIX ENDS HERE ---
 
                 elif add_device_choice == '2':
                     device_instance_counter, device_index_sequencer = configure_temp_sensor(
