@@ -1157,27 +1157,11 @@ def main():
     # FIX: Corrected CallbackAPIVersion to start with an uppercase 'V'
     mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
 
-    # --- START DEBUGGING ADDITIONS: Specific callbacks for test topic ---
-    TEST_MQTT_TOPIC = "venus-home/N/c0619ab1f730/battery/1/Dc/0/Power" # This is already a DbusBattery topic.
-
-    def debug_on_connect(client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            logger.info("DEBUG_TEST_CONNECT: Connected to MQTT Broker successfully!")
-            # Explicitly subscribe to the test topic here to ensure it's always active
-            # This subscription will be added to the global client's subscriptions.
-            # All unique topics from active_services will also be subscribed to after they are initialized.
-            client.subscribe(TEST_MQTT_TOPIC) 
-            logger.info(f"DEBUG_TEST_CONNECT: Subscribed to '{TEST_MQTT_TOPIC}' for global monitoring.")
-            on_mqtt_connect_original_global(client, userdata, flags, rc, properties)
-        else:
-            logger.error(f"DEBUG_TEST_CONNECT: Failed to connect, return code {rc}")
-
-    # Assign the new dispatcher as the global on_message handler
-    mqtt_client.on_message = on_mqtt_message_dispatcher 
-    mqtt_client.on_connect = debug_on_connect
-    mqtt_client.on_subscribe = on_mqtt_subscribe 
+    # Assign global callbacks
+    mqtt_client.on_connect = on_mqtt_connect_original_global
+    mqtt_client.on_message = on_mqtt_message_dispatcher
+    mqtt_client.on_subscribe = on_mqtt_subscribe
     mqtt_client.on_disconnect = on_mqtt_disconnect
-    # --- END DEBUGGING ADDITIONS ---
     
     if MQTT_USERNAME and MQTT_PASSWORD:
         mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
