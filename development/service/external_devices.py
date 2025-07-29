@@ -98,6 +98,7 @@ class DbusSwitch(VeDbusService):
 
         self.dbus_path_to_state_topic_map = {}
         self.dbus_path_to_command_topic_map = {}
+        self.mqtt_subscriptions = set() # Store topics this instance cares about
 
         for output_data in output_configs:
             self.add_output(output_data)
@@ -105,12 +106,12 @@ class DbusSwitch(VeDbusService):
         self.register() # Register all D-Bus paths at once
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
-        # Now, after registration, add specific MQTT callbacks and subscribe
+        # Collect all unique topics this instance needs to subscribe to
         for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
             if topic:
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic)
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusSwitch '{self['/CustomName']}' on topic: {topic}")
+                self.mqtt_subscriptions.add(topic)
+                logger.debug(f"DbusSwitch '{self['/CustomName']}' will subscribe to topic: {topic}")
+
 
     def add_output(self, output_data):
         # Construct the output prefix for D-Bus paths
@@ -122,8 +123,6 @@ class DbusSwitch(VeDbusService):
         if state_topic and 'path/to/mqtt' not in state_topic and command_topic and 'path/to/mqtt' not in command_topic:
             self.dbus_path_to_state_topic_map[dbus_state_path] = state_topic
             self.dbus_path_to_command_topic_map[dbus_state_path] = command_topic
-            # DO NOT SUBSCRIBE OR ADD CALLBACK HERE YET
-            # The subscription and callback addition is moved to __init__ after self.register()
         else:
             logger.warning(f"MQTT topics for {dbus_state_path} in DbusSwitch are invalid. Ignoring.")
 
@@ -139,6 +138,10 @@ class DbusSwitch(VeDbusService):
     # ... (rest of DbusSwitch class methods) ...
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusSwitch specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
@@ -180,7 +183,7 @@ class DbusSwitch(VeDbusService):
 
         except Exception as e:
             logger.error(f"Error processing MQTT message for DbusSwitch {self.service_name} on topic {msg.topic}: {e}")
-            traceback.print_exc() # Print full traceback for errors
+            traceback.print_exc()
 
     def handle_dbus_change(self, path, value):
         # Determine the correct section name for saving config
@@ -327,21 +330,24 @@ class DbusDigitalInput(VeDbusService):
         self.mqtt_on_payload = self.device_config.get('mqtt_on_state_payload', 'ON')
         self.mqtt_off_payload = self.device_config.get('mqtt_off_state_payload', 'OFF')
 
-        self.register() # Register D-Bus paths before subscribing to MQTT
-
-        # Add this device's specific message callback to the global client after D-Bus registration
+        self.mqtt_subscriptions = set() # Store topics this instance cares about
         if self.mqtt_state_topic and 'path/to/mqtt' not in self.mqtt_state_topic:
-            self.mqtt_client.message_callback_add(self.mqtt_state_topic, self.on_mqtt_message_specific)
-            self.mqtt_client.subscribe(self.mqtt_state_topic) # Explicitly subscribe here
-            logger.debug(f"Added specific MQTT callback and subscribed for DbusDigitalInput '{self['/CustomName']}' on topic: {self.mqtt_state_topic}")
+            self.mqtt_subscriptions.add(self.mqtt_state_topic)
+            logger.debug(f"DbusDigitalInput '{self['/CustomName']}' will subscribe to topic: {self.mqtt_state_topic}")
         else:
             logger.warning(f"No valid MqttStateTopic for '{self['/CustomName']}'. State will not update from MQTT.")
+
+        self.register() # Register D-Bus paths
 
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this digital input
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusDigitalInput specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         
         if msg.topic != self.mqtt_state_topic:
@@ -521,21 +527,22 @@ class DbusTempSensor(VeDbusService):
             if v is not None and v != '' and 'path/to/mqtt' not in v
         }
 
-        self.register() # Register D-Bus paths before subscribing to MQTT
+        self.mqtt_subscriptions = set(self.dbus_path_to_state_topic_map.values()) # Store topics this instance cares about
+        for topic in self.mqtt_subscriptions:
+            logger.debug(f"DbusTempSensor '{self['/CustomName']}' will subscribe to topic: {topic}")
 
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic: # double check validity
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTempSensor '{self['/CustomName']}' on topic: {topic}")
 
+        self.register() # Register D-Bus paths
 
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this temp sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusTempSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
@@ -685,15 +692,11 @@ class DbusTankSensor(VeDbusService):
             self.dbus_path_to_state_topic_map['/BatteryVoltage'] = battery_topic
             logger.debug(f"Tank '{self['/CustomName']}' also subscribing to BatteryVoltage topic: {battery_topic}")
 
-        self.register() # Register D-Bus paths before subscribing to MQTT
+        self.mqtt_subscriptions = set(self.dbus_path_to_state_topic_map.values()) # Store topics this instance cares about
+        for topic in self.mqtt_subscriptions:
+            logger.debug(f"DbusTankSensor '{self['/CustomName']}' will subscribe to topic: {topic}")
 
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic: # double check validity
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusTankSensor '{self['/CustomName']}' on topic: {topic}")
-
+        self.register() # Register D-Bus paths
 
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.") 
 
@@ -705,6 +708,10 @@ class DbusTankSensor(VeDbusService):
     # Specific message handler for this tank sensor
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusTankSensor specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
@@ -870,21 +877,21 @@ class DbusBattery(VeDbusService):
         }
         self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
         
-        self.register() # Register D-Bus paths before subscribing to MQTT
+        self.mqtt_subscriptions = set(self.dbus_path_to_state_topic_map.values()) # Store topics this instance cares about
+        for topic in self.mqtt_subscriptions:
+            logger.debug(f"DbusBattery '{self['/CustomName']}' will subscribe to topic: {topic}")
 
-        # Add this device's specific message callbacks to the global client for each topic
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic) # Explicitly subscribe here
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusBattery '{self['/CustomName']}' on topic: {topic}")
-
+        self.register() # Register D-Bus paths
 
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     # Specific message handler for this battery
     def on_mqtt_message_specific(self, client, userdata, msg):
         # THIS IS A KEY DEBUG POINT - IF YOU DON'T SEE THIS, MESSAGES AREN'T REACHING HERE
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusBattery specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
@@ -1007,17 +1014,19 @@ class DbusPvCharger(VeDbusService):
         }
         self.dbus_path_to_state_topic_map = {k: v for k, v in self.dbus_path_to_state_topic_map.items() if v and 'path/to/mqtt' not in v}
 
-        self.register()
+        self.mqtt_subscriptions = set(self.dbus_path_to_state_topic_map.values()) # Store topics this instance cares about
+        for topic in self.mqtt_subscriptions:
+            logger.debug(f"DbusPvCharger '{self['/CustomName']}' will subscribe to topic: {topic}")
 
-        for dbus_path, topic in self.dbus_path_to_state_topic_map.items():
-            if topic:
-                self.mqtt_client.message_callback_add(topic, self.on_mqtt_message_specific)
-                self.mqtt_client.subscribe(topic)
-                logger.debug(f"Added specific MQTT callback and subscribed for DbusPvCharger '{self['/CustomName']}' on topic: {topic}")
+        self.register()
 
         logger.info(f"Service '{service_name}' for device '{self['/CustomName']}' registered on D-Bus.")
 
     def on_mqtt_message_specific(self, client, userdata, msg):
+        # Check if the topic is one this instance is interested in
+        if msg.topic not in self.mqtt_subscriptions:
+            return # Not for this instance
+
         logger.debug(f"DbusPvCharger specific MQTT callback triggered for {self['/CustomName']} on topic '{msg.topic}'")
         try:
             payload_str = msg.payload.decode().strip()
@@ -1094,25 +1103,20 @@ class DbusPvCharger(VeDbusService):
 def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
     if rc == 0:
         logger.info("Connected to MQTT Broker!")
-        # Subscriptions are handled by individual service instances' message_callback_add
-        # or in the debug_on_connect if that's active.
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
-        # Note: If connection fails, the paho client will attempt to reconnect by default.
-        # Consider more robust error handling / retry logic here if needed for critical systems.
 
-# This global on_message callback is for debugging to ensure ANY message is received by the client.
-# If messages appear here but not in device-specific on_mqtt_message_specific, then
-# the issue is with how message_callback_add is being handled or topic filtering.
-# --- Original Global MQTT Message Callback (renamed for clarity) ---
-def on_mqtt_message_original_global(client, userdata, msg):
+# --- Global MQTT Message Dispatcher (MODIFIED) ---
+def on_mqtt_message_dispatcher(client, userdata, msg):
     logger.debug(f"GLOBAL MQTT MESSAGE RECEIVED: Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
+    # Iterate through all active services and dispatch the message
+    for service in active_services:
+        # Each service will internally check if the message is relevant to its subscriptions
+        service.on_mqtt_message_specific(client, userdata, msg)
 
 # --- ADDED: Global MQTT Disconnect Callback ---
 def on_mqtt_disconnect(client, userdata, rc, properties=None, reason=None): # Added properties and reason
     logger.warning(f"MQTT client disconnected with result code: {rc}, Reason: {reason}")
-    # You might want to add re-connection logic here if 'loop_forever' is not used,
-    # or if you need to handle specific disconnect codes.
 
 # --- ADDED: Global MQTT Subscribe Callback ---
 def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
@@ -1122,7 +1126,13 @@ def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
 # ====================================================================
 # Main Launcher (Refactored to run all services in one process)
 # ====================================================================
+
+# Make active_services a global list so the dispatcher can access it
+active_services = []
+
 def main():
+    global active_services # Declare as global to modify the list
+
     logger.info("Starting D-Bus Virtual Devices main service.")
     
     # Setup GLib MainLoop for D-Bus
@@ -1167,23 +1177,20 @@ def main():
         if rc == 0:
             logger.info("DEBUG_TEST_CONNECT: Connected to MQTT Broker successfully!")
             # Explicitly subscribe to the test topic here to ensure it's always active
+            # This subscription will be added to the global client's subscriptions.
+            # All unique topics from active_services will also be subscribed to after they are initialized.
             client.subscribe(TEST_MQTT_TOPIC) 
             logger.info(f"DEBUG_TEST_CONNECT: Subscribed to '{TEST_MQTT_TOPIC}' for global monitoring.")
             on_mqtt_connect_original_global(client, userdata, flags, rc, properties)
         else:
             logger.error(f"DEBUG_TEST_CONNECT: Failed to connect, return code {rc}")
 
-    # Re-enable the global on_message handler
-    def debug_on_message(client, userdata, msg):
-        logger.debug(f"DEBUG_TEST_MESSAGE: RAW MESSAGE (from main debug callback): Topic='{msg.topic}', Payload='{msg.payload.decode()}'")
-        on_mqtt_message_original_global(client, userdata, msg)
-
+    # Assign the new dispatcher as the global on_message handler
+    mqtt_client.on_message = on_mqtt_message_dispatcher 
     mqtt_client.on_connect = debug_on_connect
-    mqtt_client.on_message = debug_on_message 
-    mqtt_client.on_subscribe = on_mqtt_subscribe # <--- ADDED: Global on_subscribe callback
-    # --- END DEBUGGING ADDITIONS ---
-
+    mqtt_client.on_subscribe = on_mqtt_subscribe 
     mqtt_client.on_disconnect = on_mqtt_disconnect
+    # --- END DEBUGGING ADDITIONS ---
     
     if MQTT_USERNAME and MQTT_PASSWORD:
         mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -1199,7 +1206,7 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-    active_services = [] # List to hold references to our D-Bus services
+    all_topics_to_subscribe = set() # Collect all unique topics from all services
 
     device_type_map = {
         'relay_module_': DbusSwitch,
@@ -1300,11 +1307,20 @@ def main():
                 active_services.append(service)
                 logger.info(f"Successfully initialized and registered D-Bus service for [{section}] of type '{device_type_string}'.")
 
+                # Collect topics to subscribe to centrally
+                all_topics_to_subscribe.update(service.mqtt_subscriptions)
+
             except Exception as e:
                 logger.error(f"Failed to initialize D-Bus service for [{section}] ({device_type_string}): {e}")
                 traceback.print_exc()
         else:
             logger.warning(f"Section '{section}' does not match any known device type prefix. Skipping.")
+
+    # AFTER all services are initialized, subscribe to all unique topics
+    for topic in all_topics_to_subscribe:
+        mqtt_client.subscribe(topic)
+        logger.info(f"Main loop subscribing to MQTT topic: {topic}")
+
 
     if not active_services:
         logger.warning("No device services were started. Exiting.")
