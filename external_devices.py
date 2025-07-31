@@ -1080,7 +1080,10 @@ class DbusPvCharger(VeDbusService):
             traceback.print_exc()
 
     def update_dbus_from_mqtt(self, path, value):
-        self[path] = value
+        if isinstance(value, (float, int)):
+            self[path] = round(value, 1)
+        else:
+            self[path] = value
         return False
 
 # ====================================================================
