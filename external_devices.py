@@ -1081,7 +1081,7 @@ class DbusPvCharger(VeDbusService):
 
     def update_dbus_from_mqtt(self, path, value):
         if isinstance(value, (float, int)):
-            self[path] = round(value, 1)
+            self[path] = round(value, 2)
         else:
             self[path] = value
         return False
