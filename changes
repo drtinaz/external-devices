@@ -16,3 +16,5 @@ v1.4
   cleanup code
 v1.5
   fix rounding error in pv charger class
+v1.6
+  change rounding from 1 to 2
