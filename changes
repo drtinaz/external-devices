@@ -14,3 +14,5 @@ v1.3
 v1.4
   fix issue that when more than one dbus uses the same mqtt message topic resulted in only the last dbus value recieving the update.
   cleanup code
+v1.5
+  fix rounding error in pv charger class
