@@ -1080,16 +1080,25 @@ class DbusPvCharger(VeDbusService):
             traceback.print_exc()
 
     def update_dbus_from_mqtt(self, path, value):
-        self[path] = value
+        if isinstance(value, (float, int)):
+            self[path] = round(value, 2)
+        else:
+            self[path] = value
         return False
 
 # ====================================================================
 # Global MQTT Callbacks
 # ====================================================================
-# --- Original Global MQTT Connect Callback (renamed for clarity) ---
-def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
+# --- Improved Global MQTT Connect Callback ---
+def on_mqtt_connect_global(client, userdata, flags, rc, properties):
     if rc == 0:
-        logger.info("Connected to MQTT Broker!")
+        logger.info("Successfully connected to MQTT Broker!")
+        # Userdata should contain the set of topics to subscribe to
+        if userdata:
+            logger.info("Re-subscribing to topics...")
+            for topic in userdata:
+                client.subscribe(topic)
+                logger.debug(f"Subscribed to topic: {topic}")
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
@@ -1118,7 +1127,7 @@ def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
 active_services = []
 
 def main():
-    global active_services # Declare as global to modify the list
+    global active_services # Make active_services a global list so the dispatcher can access it
 
     logger.info("Starting D-Bus Virtual Devices main service.")
     
@@ -1156,9 +1165,15 @@ def main():
     logger.info(f"Using MQTT Client ID: {client_id}")
     # FIX: Corrected CallbackAPIVersion to start with an uppercase 'V'
     mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+    
+    # MODIFICATION: This set will be populated and then attached to the client's userdata
+    all_topics_to_subscribe = set()
+    mqtt_client.user_data_set(all_topics_to_subscribe)
 
     # Assign global callbacks
-    mqtt_client.on_connect = on_mqtt_connect_original_global
+    # MODIFICATION: Assign the new, improved on_connect callback
+    # You must also add the new 'on_mqtt_connect_global' function to your script.
+    mqtt_client.on_connect = on_mqtt_connect_global
     mqtt_client.on_message = on_mqtt_message_dispatcher
     mqtt_client.on_subscribe = on_mqtt_subscribe
     mqtt_client.on_disconnect = on_mqtt_disconnect
@@ -1177,6 +1192,7 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # This variable is populated but subscriptions are handled by the on_connect callback
     all_topics_to_subscribe = set() # Collect all unique topics from all services
 
     device_type_map = {
@@ -1287,12 +1303,9 @@ def main():
         else:
             logger.warning(f"Section '{section}' does not match any known device type prefix. Skipping.")
 
-    # AFTER all services are initialized, subscribe to all unique topics
-    for topic in all_topics_to_subscribe:
-        mqtt_client.subscribe(topic)
-        logger.debug(f"Main loop subscribing to MQTT topic: {topic}")
-
-
+    # MODIFICATION: REMOVED the subscription loop from here.
+    # The 'on_connect_global' callback now handles all subscriptions automatically upon connection.
+    
     if not active_services:
         logger.warning("No device services were started. Exiting.")
         if mqtt_client:
