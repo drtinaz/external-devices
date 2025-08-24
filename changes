@@ -18,3 +18,5 @@ v1.5
   fix rounding error in pv charger class
 v1.6
   change rounding from 1 to 2
+v1.7
+  fix bug when broker connection was lost, broker was reconnected but topics not re-subscribed

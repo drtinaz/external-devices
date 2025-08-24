@@ -1089,10 +1089,16 @@ class DbusPvCharger(VeDbusService):
 # ====================================================================
 # Global MQTT Callbacks
 # ====================================================================
-# --- Original Global MQTT Connect Callback (renamed for clarity) ---
-def on_mqtt_connect_original_global(client, userdata, flags, rc, properties):
+# --- Improved Global MQTT Connect Callback ---
+def on_mqtt_connect_global(client, userdata, flags, rc, properties):
     if rc == 0:
-        logger.info("Connected to MQTT Broker!")
+        logger.info("Successfully connected to MQTT Broker!")
+        # Userdata should contain the set of topics to subscribe to
+        if userdata:
+            logger.info("Re-subscribing to topics...")
+            for topic in userdata:
+                client.subscribe(topic)
+                logger.debug(f"Subscribed to topic: {topic}")
     else:
         logger.error(f"Failed to connect to MQTT Broker, return code {rc}")
 
@@ -1121,7 +1127,7 @@ def on_mqtt_subscribe(client, userdata, mid, granted_qos, properties=None):
 active_services = []
 
 def main():
-    global active_services # Declare as global to modify the list
+    global active_services # Make active_services a global list so the dispatcher can access it
 
     logger.info("Starting D-Bus Virtual Devices main service.")
     
@@ -1159,9 +1165,13 @@ def main():
     logger.info(f"Using MQTT Client ID: {client_id}")
     # FIX: Corrected CallbackAPIVersion to start with an uppercase 'V'
     mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+    
+    # This set will be populated BEFORE we connect
+    all_topics_to_subscribe = set()
+    mqtt_client.user_data_set(all_topics_to_subscribe)
 
     # Assign global callbacks
-    mqtt_client.on_connect = on_mqtt_connect_original_global
+    mqtt_client.on_connect = on_mqtt_connect_global
     mqtt_client.on_message = on_mqtt_message_dispatcher
     mqtt_client.on_subscribe = on_mqtt_subscribe
     mqtt_client.on_disconnect = on_mqtt_disconnect
@@ -1170,17 +1180,7 @@ def main():
         mqtt_client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
         logger.debug("MQTT Username/Password set.")
     
-    # Connect and start MQTT client loop in a non-blocking way
-    try:
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-        mqtt_client.loop_start() # Start the MQTT network loop in a separate thread
-        logger.info(f"Attempting to connect to MQTT broker at {MQTT_HOST}:{MQTT_PORT}...")
-    except Exception as e:
-        logger.critical(f"Initial connection to MQTT broker failed: {e}. Exiting.")
-        traceback.print_exc()
-        sys.exit(1)
-
-    all_topics_to_subscribe = set() # Collect all unique topics from all services
+    # MODIFICATION: Connection logic is MOVED to after the device setup loop.
 
     device_type_map = {
         'relay_module_': DbusSwitch,
@@ -1229,7 +1229,6 @@ def main():
                     # Generate a random serial number if not provided
                     serial_number = str(random.randint(1000000000000000, 9999999999999999))
                     logger.warning(f"Serial number not found or is empty for [{section}]. Generating random serial: {serial_number}")
-                    # Optionally, save this back to config, but for a virtual device, usually not critical.
 
                 # IMPORTANT: Create a NEW, independent BusConnection instance for each service
                 # This ensures each service gets its own D-Bus name.
@@ -1290,12 +1289,17 @@ def main():
         else:
             logger.warning(f"Section '{section}' does not match any known device type prefix. Skipping.")
 
-    # AFTER all services are initialized, subscribe to all unique topics
-    for topic in all_topics_to_subscribe:
-        mqtt_client.subscribe(topic)
-        logger.debug(f"Main loop subscribing to MQTT topic: {topic}")
-
-
+    # MODIFICATION: Now that all topics are known, connect to the broker.
+    # The on_connect callback will fire and subscribe to everything in the populated set.
+    try:
+        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+        mqtt_client.loop_start() # Start the MQTT network loop in a separate thread
+        logger.info(f"Connecting to MQTT broker at {MQTT_HOST}:{MQTT_PORT}...")
+    except Exception as e:
+        logger.critical(f"Initial connection to MQTT broker failed: {e}. Exiting.")
+        traceback.print_exc()
+        sys.exit(1)
+    
     if not active_services:
         logger.warning("No device services were started. Exiting.")
         if mqtt_client:
